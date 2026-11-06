@@ -1,0 +1,173 @@
+using System.Numerics;
+using Raylib_cs;
+
+namespace Z04;
+
+/// <summary>Klavesy jako ciselne kody (GLFW) - nezavisle na verzi Raylib-cs.</summary>
+public static class Keys
+{
+    public static readonly KeyboardKey W = (KeyboardKey)87;
+    public static readonly KeyboardKey A = (KeyboardKey)65;
+    public static readonly KeyboardKey S = (KeyboardKey)83;
+    public static readonly KeyboardKey D = (KeyboardKey)68;
+    public static readonly KeyboardKey E = (KeyboardKey)69;
+    public static readonly KeyboardKey B = (KeyboardKey)66;
+    public static readonly KeyboardKey N = (KeyboardKey)78;
+    public static readonly KeyboardKey Q = (KeyboardKey)81;
+    public static readonly KeyboardKey Space = (KeyboardKey)32;
+    public static readonly KeyboardKey Shift = (KeyboardKey)340;
+    public static readonly KeyboardKey Up = (KeyboardKey)265;
+    public static readonly KeyboardKey Down = (KeyboardKey)264;
+    public static readonly KeyboardKey Left = (KeyboardKey)263;
+    public static readonly KeyboardKey Right = (KeyboardKey)262;
+    public static readonly MouseButton MouseLeft = (MouseButton)0;
+
+    /// <summary>Klavesa 1..9 (i = 0 -> '1').</summary>
+    public static KeyboardKey Num(int i) => (KeyboardKey)(49 + i);
+}
+
+public static class Pal
+{
+    public static readonly Color Black = new(0, 0, 0, 255);
+    public static readonly Color White = new(255, 255, 255, 255);
+    public static readonly Color Grass = new(52, 104, 54, 255);
+    public static readonly Color Park = new(38, 118, 52, 255);
+    public static readonly Color Tree = new(24, 86, 38, 255);
+    public static readonly Color Road = new(60, 60, 65, 255);
+    public static readonly Color Line = new(225, 205, 90, 255);
+    public static readonly Color Sidewalk = new(150, 150, 146, 255);
+    public static readonly Color Glass = new(35, 55, 80, 255);
+    public static readonly Color Wreck = new(38, 36, 36, 255);
+    public static readonly Color Police = new(235, 235, 245, 255);
+    public static readonly Color Army = new(82, 104, 60, 255);
+    public static readonly Color Blood = new(120, 10, 10, 255);
+    public static readonly Color Yellow = new(250, 220, 40, 255);
+    public static readonly Color Red = new(230, 40, 40, 255);
+    public static readonly Color Blue = new(50, 90, 230, 255);
+    public static readonly Color Dark = new(30, 30, 34, 255);
+    public static readonly Color Gray = new(110, 110, 116, 255);
+    public static readonly Color Fire = new(255, 150, 30, 255);
+    public static readonly Color Smoke = new(70, 70, 70, 255);
+    public static readonly Color MapBg = new(70, 70, 74, 255);
+
+    public static readonly Color[] Roofs =
+    {
+        new(122, 92, 82, 255), new(98, 108, 124, 255), new(136, 126, 100, 255),
+        new(90, 100, 92, 255), new(140, 100, 100, 255), new(96, 86, 120, 255),
+    };
+
+    public static readonly Color[] Cars =
+    {
+        new(200, 50, 50, 255), new(50, 90, 200, 255), new(220, 200, 60, 255), new(60, 160, 90, 255),
+        new(225, 225, 225, 255), new(45, 45, 50, 255), new(230, 130, 40, 255), new(150, 60, 170, 255),
+    };
+}
+
+public record Weapon(string Name, int Price, float Cooldown, float Damage, int Pellets,
+                     float Spread, float Speed, float Range, bool Explosive);
+
+public static class Weapons
+{
+    // Name, Price, Cooldown, Damage, Pellets, Spread, Speed, Range, Explosive
+    public static readonly Weapon[] All =
+    {
+        new("Pistole",    0,     0.35f, 25, 1, 0.03f, 900,  650,  false),
+        new("SMG",        1500,  0.08f, 13, 1, 0.09f, 950,  600,  false),
+        new("Brokovnice", 3500,  0.80f, 14, 8, 0.28f, 800,  330,  false),
+        new("Minigun",    9000,  0.035f, 9, 1, 0.12f, 1000, 650,  false),
+        new("Raketomet",  15000, 1.10f, 0,  1, 0.01f, 650,  1400, true),
+    };
+}
+
+public enum VKind { Civil, Police, Tank }
+public enum VState { Alive, Burning, Wreck }
+public enum PKind { Civil, Cop, Soldier }
+public enum QType { DestroyCars, KillCops, Checkpoint, Survive }
+
+public class Vehicle
+{
+    public Vector2 Pos;
+    public float Angle;          // radiany, 0 = vychod, y roste dolu
+    public float Speed;
+    public float Hp, MaxHp;
+    public VKind Kind;
+    public VState State = VState.Alive;
+    public Color Body;
+
+    public bool PlayerDriven;    // ridi hrac
+    public bool Ai;              // ridi AI (civil provoz / policie / armada)
+    public bool HitByPlayer;     // pro odmeny za znicene auto
+
+    public float BurnTime, WreckAge, SmokeT, FireT, TurretAngle;
+    public int Dir;              // smer civilniho AI (0 V, 1 J, 2 Z, 3 S)
+    public int LastNode = -1;
+    public float StuckT, ReverseT, ReverseSteer;
+
+    public Vehicle(VKind kind, Vector2 pos, float angle, Color body)
+    {
+        Kind = kind; Pos = pos; Angle = angle; Body = body; TurretAngle = angle;
+        MaxHp = Hp = kind switch { VKind.Tank => 600f, VKind.Police => 140f, _ => 100f };
+    }
+
+    public float Radius => Kind == VKind.Tank ? 27f : 19f;
+    public float Length => Kind == VKind.Tank ? 64f : 44f;
+    public float Width => Kind == VKind.Tank ? 44f : 24f;
+    public float MaxSpeed => Kind switch { VKind.Tank => 150f, VKind.Police => 450f, _ => 380f };
+    public float Accel => Kind switch { VKind.Tank => 170f, VKind.Police => 540f, _ => 420f };
+    public float TurnRate => Kind switch { VKind.Tank => 1.4f, VKind.Police => 2.9f, _ => 2.7f };
+    public Vector2 Forward => new(MathF.Cos(Angle), MathF.Sin(Angle));
+}
+
+public class Person
+{
+    public Vector2 Pos;
+    public float Hp;
+    public PKind Kind;
+    public Color Col;
+    public float Angle, WalkT, FireT, FleeT, DeadT;
+    public bool Moving, Dead, HitByPlayer;
+    public Vector2 FleeFrom;
+
+    public Person(PKind kind, Vector2 pos, Color col)
+    {
+        Kind = kind; Pos = pos; Col = col;
+        Hp = kind switch { PKind.Soldier => 100f, PKind.Cop => 60f, _ => 40f };
+    }
+}
+
+public class Bullet
+{
+    public Vector2 Pos, Vel;
+    public float Damage, Life;
+    public bool Player, Explosive, Dead;
+    public Vehicle? Ignore;
+}
+
+public class Explosion
+{
+    public const float Dur = 0.6f;
+    public Vector2 Pos;
+    public float Radius, T;
+}
+
+public class Particle
+{
+    public Vector2 Pos, Vel;
+    public float Life, MaxLife, Size;
+    public int Kind;             // 0 ohen, 1 koure, 2 jiskra
+}
+
+public class Popup
+{
+    public Vector2 Pos;
+    public string Text = "";
+    public float Life;
+}
+
+public class Quest
+{
+    public QType Type;
+    public float Prog, Time;
+    public int Goal, Reward;
+    public Vector2 Target;
+}
