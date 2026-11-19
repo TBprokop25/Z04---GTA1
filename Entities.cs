@@ -14,6 +14,10 @@ public static class Keys
     public static readonly KeyboardKey B = (KeyboardKey)66;
     public static readonly KeyboardKey N = (KeyboardKey)78;
     public static readonly KeyboardKey Q = (KeyboardKey)81;
+    public static readonly KeyboardKey M = (KeyboardKey)77;
+    public static readonly KeyboardKey P = (KeyboardKey)80;
+    public static readonly KeyboardKey Enter = (KeyboardKey)257;
+    public static readonly KeyboardKey Escape = (KeyboardKey)256;
     public static readonly KeyboardKey Space = (KeyboardKey)32;
     public static readonly KeyboardKey Shift = (KeyboardKey)340;
     public static readonly KeyboardKey Up = (KeyboardKey)265;
@@ -79,6 +83,18 @@ public static class Weapons
     };
 }
 
+/// <summary>Ladici konstanty obtiznosti (pouzite v Game.cs).</summary>
+public static class Tune
+{
+    public const float CopSpawnDelay = 4f;      // s mezi doplnovanim policie
+    public const float CarFireCd = 0.9f;        // s mezi vystrely policejniho auta
+    public const float CopFireCd = 1.2f;        // s mezi vystrely policisty
+    public const float SoldierFireCd = 0.24f;   // s mezi vystrely vojaka
+    public const float CopDamageMul = 0.5f;     // nasobek poskozeni aut od strelby
+    public const float HeatDecayNear = 1.2f;    // ubytek hledanosti/s kdyz jsou policajti blizko
+    public const float HeatDecayFar = 8f;       // ... kdyz jsou daleko (utek)
+}
+
 public enum VKind { Civil, Police, Tank }
 public enum VState { Alive, Burning, Wreck }
 public enum PKind { Civil, Cop, Soldier }
@@ -106,15 +122,15 @@ public class Vehicle
     public Vehicle(VKind kind, Vector2 pos, float angle, Color body)
     {
         Kind = kind; Pos = pos; Angle = angle; Body = body; TurretAngle = angle;
-        MaxHp = Hp = kind switch { VKind.Tank => 600f, VKind.Police => 140f, _ => 100f };
+        MaxHp = Hp = kind switch { VKind.Tank => 600f, VKind.Police => 110f, _ => 100f };
     }
 
     public float Radius => Kind == VKind.Tank ? 27f : 19f;
     public float Length => Kind == VKind.Tank ? 64f : 44f;
     public float Width => Kind == VKind.Tank ? 44f : 24f;
-    public float MaxSpeed => Kind switch { VKind.Tank => 150f, VKind.Police => 450f, _ => 380f };
-    public float Accel => Kind switch { VKind.Tank => 170f, VKind.Police => 540f, _ => 420f };
-    public float TurnRate => Kind switch { VKind.Tank => 1.4f, VKind.Police => 2.9f, _ => 2.7f };
+    public float MaxSpeed => Kind switch { VKind.Tank => 150f, VKind.Police => PlayerDriven ? 380f : 270f, _ => 380f };
+    public float Accel => Kind switch { VKind.Tank => 170f, VKind.Police => 320f, _ => 420f };
+    public float TurnRate => Kind switch { VKind.Tank => 1.4f, VKind.Police => 2.6f, _ => 2.7f };
     public Vector2 Forward => new(MathF.Cos(Angle), MathF.Sin(Angle));
 }
 
@@ -131,7 +147,7 @@ public class Person
     public Person(PKind kind, Vector2 pos, Color col)
     {
         Kind = kind; Pos = pos; Col = col;
-        Hp = kind switch { PKind.Soldier => 100f, PKind.Cop => 60f, _ => 40f };
+        Hp = kind switch { PKind.Soldier => 100f, PKind.Cop => 40f, _ => 40f };
     }
 }
 
