@@ -24,17 +24,21 @@ public class Game
     readonly List<Explosion> explosions = new();
     readonly List<Particle> particles = new();
     readonly List<Popup> popups = new();
+    Heli? heli;
+    float blockadeCd;
 
     // hrac
     Vector2 pPos;
-    float pAngle, pHp = 100, fireT, deadT, lastHurtT = 99, carHitCd;
+    float pAngle, pHp = 100, pArmor, fireT, deadT, lastHurtT = 99, carHitCd;
+    const int ArmorPrice = 800;
     Vehicle? car;
     int money, weaponIdx;
     readonly bool[] owned = new bool[Weapons.All.Length];
     bool shop;
+    bool holstered = true;   // zbran schovana (nebehas s ni porad v ruce)
 
     // chaos / stav hry
-    float heat, comboT, spawnT, shake, animT, msgT, civT;
+    float heat, comboT, spawnT, shake, animT, msgT, civT, sirenT;
     int combo, carsDestroyed, kills, totalChaos;
     string msg = "";
     Quest? quest;
@@ -44,8 +48,13 @@ public class Game
     // pickupy, lakovna, ohorele fleky po vybuchu
     class Pickup { public Vector2 Pos; public int Kind; public float Life = 22f; }   // 0 zdravi, 1 penize
     class Scorch { public Vector2 Pos; public float R, Age; }
+    class Muzzle { public Vector2 Pos; public float Ang, T; }   // zablesk z hlavne
+    class Mark { public Vector2 Pos; public float Age; }        // stopa po pneumatikach
     readonly List<Pickup> pickups = new();
     readonly List<Scorch> scorches = new();
+    readonly List<Muzzle> muzzles = new();
+    readonly List<Mark> tireMarks = new();
+    float pWalk;   // akumulovana faze chuze hrace (pro animaci nohou)
     Vector2 spray => world.GarageDoor;
     const int SprayPrice = 300;
     float sprayCd, sprayT;
@@ -55,6 +64,16 @@ public class Game
     int prevStars;
     float alertT;
     string alertText = "";
+
+    // sluzby na mape
+    const int HospitalFee = 200;
+    float serviceCd;              // cooldown interakci u budov
+    int bestChaos;               // nejlepsi skore (ulozene)
+    static string SavePath => Path.Combine(AppContext.BaseDirectory, "chaoscity_save.txt");
+
+    // den / noc
+    float dayTime = 0.28f;       // 0..1 (0 = pulnoc, 0.5 = poledne)
+    float Night => Math.Clamp((MathF.Cos(dayTime * MathF.Tau) + 0.35f) / 1.1f, 0f, 1f);
 
     // UI: obrazovky
     enum Scr { Menu, Play, Pause, Help }
@@ -82,12 +101,35 @@ public class Game
     float Rnd(float a, float b) => a + Rnd() * (b - a);
     void Say(string s) { msg = s; msgT = 3.5f; }
 
+    void LoadGame()
+    {
+        try
+        {
+            if (!File.Exists(SavePath)) return;
+            var parts = File.ReadAllText(SavePath).Split(';');
+            if (parts.Length >= 1 && int.TryParse(parts[0], out int bc)) bestChaos = bc;
+            if (parts.Length >= 2 && int.TryParse(parts[1], out int mn)) money = mn;
+        }
+        catch { /* poskozeny save ignorujeme */ }
+    }
+
+    void SaveGame()
+    {
+        try
+        {
+            bestChaos = Math.Max(bestChaos, totalChaos);
+            File.WriteAllText(SavePath, $"{bestChaos};{money}");
+        }
+        catch { }
+    }
+
     // ------------------------------------------------------------ start
 
     public Game(int w, int h)
     {
         W = w; H = h;
         owned[0] = true;
+        LoadGame();
         pPos = World.Node(4, 4);
 
         cam = new Camera2D();
@@ -119,6 +161,12 @@ public class Game
             if (attempt < 30 && Vector2.Distance(pos, pPos) < minDist) continue;
 
             var v = new Vehicle(VKind.Civil, pos, dir * MathF.PI / 2, Pal.Cars[rnd.Next(Pal.Cars.Length)]);
+            // vyber modelu: vetsinou sedan, obcas dodavka/autobus/motorka/sanitka
+            double mr = rnd.NextDouble();
+            v.Model = mr < 0.62 ? VModel.Sedan : mr < 0.78 ? VModel.Van : mr < 0.88 ? VModel.Bike
+                    : mr < 0.96 ? VModel.Bus : VModel.Ambulance;
+            if (v.Model == VModel.Ambulance) { v.Body = new Color(240, 240, 245, 255); v.MaxHp = v.Hp = 130f; }
+            else if (v.Model == VModel.Bus) { v.MaxHp = v.Hp = 200f; }
             v.Dir = dir;
             v.Ai = ai;
             if (ai) v.Speed = 150;
@@ -153,7 +201,8 @@ public class Game
                 PKind.Soldier => new Color(80, 100, 50, 255),
                 _ => new Color((byte)rnd.Next(70, 230), (byte)rnd.Next(70, 230), (byte)rnd.Next(70, 230), (byte)255),
             };
-            people.Add(new Person(kind, pos, col) { Angle = Rnd(0, 2 * MathF.PI) });
+            float ph = Rnd(0, 2 * MathF.PI);
+            people.Add(new Person(kind, pos, col) { Angle = ph, Phase = ph, AnimWalk = ph });
             return;
         }
     }
@@ -163,6 +212,10 @@ public class Game
     public void Update(float dt)
     {
         animT += dt;
+        dayTime = (dayTime + dt / 150f) % 1f;   // cely den/noc cyklus za 150 s
+
+        bool driving = scr == Scr.Play && !mapOpen && !shop && car != null && car.State == VState.Alive;
+        Sfx.Engine(driving, driving ? MathF.Abs(car!.Speed) / car.MaxSpeed : 0f);
 
         if (scr != Scr.Play) { UpdateMenu(); return; }
         if (mapOpen)
@@ -184,6 +237,7 @@ public class Game
 
         UpdatePlayer(dt);
         UpdateVehicles(dt);
+        UpdateHeli(dt);
         UpdatePeople(dt);
         UpdateBullets(dt);
         UpdateWanted(dt);
@@ -215,6 +269,15 @@ public class Game
             }
             else Say("Nedostatek penez na " + w.Name);
         }
+
+        // brneni (posledni radek)
+        int ai = Weapons.All.Length;
+        if (Raylib.IsKeyPressed(Keys.Num(ai)) || (click && Raylib.CheckCollisionPointRec(mp, ShopRow(ai))))
+        {
+            if (pArmor >= 100) Say("Brneni je plne.");
+            else if (money >= ArmorPrice) { money -= ArmorPrice; pArmor = MathF.Min(100, pArmor + 50); Say("Koupeno brneni (+50)."); }
+            else Say($"Nedostatek penez na brneni (${ArmorPrice}).");
+        }
     }
 
     // ---------- hrac
@@ -235,10 +298,14 @@ public class Game
         if (pHp < 100 && lastHurtT > 6f) pHp = MathF.Min(100, pHp + 4 * dt);
         if (Raylib.IsKeyPressed(Keys.N)) { NewQuest(); Say("Novy quest."); }
 
+        if (serviceCd > 0) serviceCd -= dt;
+
         if (Raylib.IsKeyPressed(Keys.E))
         {
             if (car != null) ExitCar();
             else if (CanRobBank()) StartRobbery();
+            else if (NearDoor(world.HospitalDoor)) UseHospital();
+            else if (NearDoor(world.SafehouseDoor)) UseSafehouse();
             else TryEnterCar();
         }
         if (car != null) return;   // v aute se rizeni resi v UpdateVehicles
@@ -246,7 +313,15 @@ public class Game
         if (Raylib.IsKeyPressed(Keys.Q))
         {
             do { weaponIdx = (weaponIdx + 1) % Weapons.All.Length; } while (!owned[weaponIdx]);
+            holstered = false;
             Say("Zbran: " + Weapons.All[weaponIdx].Name);
+        }
+
+        if (Raylib.IsKeyPressed(Keys.F))
+        {
+            holstered = !holstered;
+            Sfx.Play(Snd.Click);
+            Say(holstered ? "Zbran schovana" : "Zbran pripravena");
         }
 
         // pohyb pesky
@@ -258,11 +333,20 @@ public class Game
         if (mv != Vector2.Zero) mv = Vector2.Normalize(mv);
         float spd = Raylib.IsKeyDown(Keys.Shift) ? 220f : 150f;
         pPos += mv * spd * dt;
+        pWalk += mv.Length() * spd * dt * 0.09f;   // animace nohou podle ujete vzdalenosti
         world.Resolve(ref pPos, 9);
 
         // mireni a strelba
         var mw = Raylib.GetScreenToWorld2D(Raylib.GetMousePosition(), cam);
         pAngle = MathF.Atan2(mw.Y - pPos.Y, mw.X - pPos.X);
+
+        // schovana zbran: prvni klik ji jen vytahne (nebehas s ni porad)
+        if (holstered)
+        {
+            if (Raylib.IsMouseButtonPressed(Keys.MouseLeft)) { holstered = false; Say("Zbran pripravena"); }
+            return;
+        }
+
         if (Raylib.IsMouseButtonDown(Keys.MouseLeft) && fireT <= 0)
         {
             var w = Weapons.All[weaponIdx];
@@ -270,12 +354,16 @@ public class Game
             Shoot(pPos + DirOf(pAngle) * 14, pAngle, w.Damage, w.Spread, w.Speed, w.Range, w.Explosive, true, null, w.Pellets);
             AlertCivilians(pPos, 320, 3f);
             if (w.Explosive) shake = MathF.Max(shake, 5);
+            Snd sfx = w.Name == "Brokovnice" ? Snd.Shotgun
+                    : w.Name is "SMG" or "Minigun" ? Snd.Smg
+                    : w.Explosive ? Snd.Nitro : Snd.Shot;
+            Sfx.Play(sfx, Rnd(0.95f, 1.08f));
         }
     }
 
     void Respawn()
     {
-        pHp = 100; heat = 0; car = null; combo = 0; sprayT = 0; robbing = false;
+        pHp = 100; pArmor = 0; heat = 0; car = null; combo = 0; sprayT = 0; robbing = false; heli = null; holstered = true;
         pPos = World.Node(4, 4);
         int fee = (int)(money * 0.2f);
         money -= fee;
@@ -314,14 +402,23 @@ public class Game
     void HurtPlayer(float dmg)
     {
         if (deadT > 0) return;
+        if (pArmor > 0)                      // brneni pohlti vetsinu zasahu
+        {
+            float absorb = MathF.Min(pArmor, dmg * 0.7f);
+            pArmor -= absorb;
+            dmg -= absorb;
+        }
         pHp -= dmg;
         lastHurtT = 0;
         shake = MathF.Max(shake, 4);
+        Sfx.Play(Snd.Hurt, Rnd(0.9f, 1.1f));
         if (pHp <= 0)
         {
             pHp = 0;
             deadT = 3.5f;
             if (car != null) { car.PlayerDriven = false; car = null; }
+            Sfx.Play(Snd.Explosion, 0.7f);
+            SaveGame();
         }
     }
 
@@ -370,7 +467,28 @@ public class Game
         if (Raylib.IsKeyDown(Keys.S) || Raylib.IsKeyDown(Keys.Down)) thr -= 1;
         if (Raylib.IsKeyDown(Keys.D) || Raylib.IsKeyDown(Keys.Right)) st += 1;
         if (Raylib.IsKeyDown(Keys.A) || Raylib.IsKeyDown(Keys.Left)) st -= 1;
-        DriveVehicle(v, thr, st, Raylib.IsKeyDown(Keys.Space), dt);
+        bool brake = Raylib.IsKeyDown(Keys.Space);
+        DriveVehicle(v, thr, st, brake, dt);
+
+        // nitro: Shift pri plynu dopredu = kratkodobe prekroceni maximalky + plameny z vyfuku
+        if (Raylib.IsKeyPressed(Keys.Shift) && v.Kind != VKind.Tank) Sfx.Play(Snd.Nitro, 1.2f, 0.7f);
+        if (Raylib.IsKeyDown(Keys.Shift) && thr > 0 && v.Kind != VKind.Tank && v.State == VState.Alive)
+        {
+            v.Speed = MathF.Min(v.Speed + v.Accel * 1.6f * dt, v.MaxSpeed * 1.4f);
+            var ex = v.Pos - v.Forward * (v.Length * 0.5f);
+            AddParticle(ex + new Vector2(Rnd(-4, 4), Rnd(-4, 4)), -v.Forward * Rnd(40, 110), 0.3f, Rnd(5, 9), 0);
+        }
+
+        // stopy po pneumatikach pri smyku (rucni brzda nebo ostra zatacka v rychlosti)
+        if ((brake || MathF.Abs(st) > 0.5f) && MathF.Abs(v.Speed) > 150 && v.Kind != VKind.Tank)
+        {
+            var fw = v.Forward;
+            var rg = new Vector2(-fw.Y, fw.X);
+            var rear = v.Pos - fw * (v.Length * 0.3f);
+            tireMarks.Add(new Mark { Pos = rear + rg * (v.Width * 0.38f) });
+            tireMarks.Add(new Mark { Pos = rear - rg * (v.Width * 0.38f) });
+            while (tireMarks.Count > 400) tireMarks.RemoveAt(0);
+        }
 
         if (v.Kind == VKind.Tank)
         {
@@ -443,6 +561,21 @@ public class Game
     void UpdateChaseAi(Vehicle v, float dt)
     {
         if (Stars == 0 || deadT > 0) { DriveVehicle(v, 0, 0, true, dt); return; }
+
+        if (v.Blockade)   // zatarasc stoji na miste a odstreluje
+        {
+            DriveVehicle(v, 0, 0, true, dt);
+            var d2 = pPos - v.Pos;
+            float dist2 = d2.Length();
+            v.FireT -= dt;
+            if (dist2 < 360 && v.FireT <= 0)
+            {
+                v.FireT = Tune.CarFireCd;
+                float a2 = MathF.Atan2(d2.Y, d2.X);
+                Shoot(v.Pos + DirOf(a2) * 24, a2, 6, 0.18f, 700, 480, false, false, v);
+            }
+            return;
+        }
 
         Vector2 to = pPos - v.Pos;
         float dist = to.Length();
@@ -688,7 +821,19 @@ public class Game
             }
             else vel = Wander(p, dt, 40f);
 
+            // civiliste se drzi chodniku - kdyz by vkrocili na silnici, otoci se zpet
+            if (p.Kind == PKind.Civil && p.FleeT <= 0 && vel.LengthSquared() > 1)
+            {
+                if (world.OnRoad(p.Pos + Vector2.Normalize(vel) * 16))
+                {
+                    p.Angle = MathF.Atan2(-vel.Y, -vel.X);
+                    p.WalkT = Rnd(0.6f, 1.6f);
+                    vel = Vector2.Zero;
+                }
+            }
+
             p.Pos += vel * dt;
+            p.AnimWalk += vel.Length() * dt * 0.09f;
             world.Resolve(ref p.Pos, 9);
             if (p.Kind == PKind.Civil && vel.LengthSquared() > 1) p.Angle = MathF.Atan2(vel.Y, vel.X);
         }
@@ -718,6 +863,7 @@ public class Game
 
         p.Dead = true;
         p.DeadT = 0;
+        p.DeathAng = p.Angle + Rnd(-0.6f, 0.6f);
         kills++;
         for (int i = 0; i < 5; i++)
             AddParticle(p.Pos, new Vector2(Rnd(-60, 60), Rnd(-60, 60)), 0.5f, 4, 2);
@@ -752,6 +898,7 @@ public class Game
             });
         }
         AddParticle(origin, DirOf(angle) * 40, 0.08f, 6, 2);
+        if (muzzles.Count < 60) muzzles.Add(new Muzzle { Pos = origin, Ang = angle, T = 0.06f });
     }
 
     void UpdateBullets(float dt)
@@ -804,6 +951,12 @@ public class Game
                 }
             }
 
+            if (!hit && b.Player && heli != null && Vector2.Distance(heli.Pos, b.Pos) < heli.Radius)
+            {
+                DamageHeli(b.Damage, true);   // vybusne strely navic vybuchnou v bloku 'hit' nize
+                hit = true;
+            }
+
             if (!hit && !b.Player && car == null && deadT <= 0 && Vector2.Distance(pPos, b.Pos) < 10)
             {
                 HurtPlayer(b.Damage);
@@ -824,6 +977,8 @@ public class Game
     {
         explosions.Add(new Explosion { Pos = pos, Radius = radius });
         scorches.Add(new Scorch { Pos = pos, R = radius * 0.55f });
+        float evol = Math.Clamp(1f - Vector2.Distance(pos, pPos) / 1400f, 0.1f, 1f);
+        Sfx.Play(Snd.Explosion, Rnd(0.9f, 1.1f), evol);
         if (scorches.Count > 40) scorches.RemoveAt(0);
 
         for (int i = 0; i < 28; i++)
@@ -846,6 +1001,12 @@ public class Game
             float dist = Vector2.Distance(p.Pos, pos);
             if (dist >= radius) continue;
             DamagePerson(p, damage * (1f - dist / radius) * 2f, byPlayer);
+        }
+
+        if (heli != null)
+        {
+            float hd = Vector2.Distance(heli.Pos, pos);
+            if (hd < radius + heli.Radius) DamageHeli(damage * (1f - hd / (radius + heli.Radius)), byPlayer);
         }
 
         float pd = Vector2.Distance(pPos, pos);
@@ -886,8 +1047,15 @@ public class Game
         comboT -= dt;
         if (comboT <= 0) combo = 0;
 
+        sirenT -= dt;
+        if (Stars > 0 && sirenT <= 0) { sirenT = Rnd(2.0f, 3.2f); Sfx.Play(Snd.Siren, Rnd(0.95f, 1.05f), 0.45f); }
+
         spawnT -= dt;
         if (spawnT <= 0) { spawnT = Tune.CopSpawnDelay; SpawnPolice(); }
+
+        // policejni zatarasy pri vyssi hledanosti
+        if (blockadeCd > 0) blockadeCd -= dt;
+        if (Stars >= 3 && blockadeCd <= 0) { blockadeCd = Rnd(14f, 22f); SpawnRoadblock(); }
 
         // doplnovani civilniho provozu a chodcu
         civT -= dt;
@@ -923,6 +1091,78 @@ public class Game
         if (sold < WantSoldiers[s]) SpawnPerson(PKind.Soldier, 450, 800);
         if (cars < WantCars[s]) SpawnPoliceVehicle(VKind.Police);
         if (tanks < WantTanks[s]) SpawnPoliceVehicle(VKind.Tank);
+        if (s >= 5 && heli == null) heli = new Heli { Pos = pPos + DirOf(Rnd(0, 2 * MathF.PI)) * 760 };
+    }
+
+    void SpawnRoadblock()
+    {
+        var fdir = car != null && MathF.Abs(car.Speed) > 30 ? car.Forward : DirOf(pAngle);
+        var target = pPos + fdir * 650;
+        int ni = Math.Clamp((int)MathF.Round((target.X - World.Road / 2) / World.Cell), 0, World.Grid);
+        int nj = Math.Clamp((int)MathF.Round((target.Y - World.Road / 2) / World.Cell), 0, World.Grid);
+        var node = World.Node(ni, nj);
+        if (Vector2.Distance(node, pPos) < 320) return;
+
+        var across = new Vector2(-fdir.Y, fdir.X);
+        for (int k = -1; k <= 1; k++)
+        {
+            var v = new Vehicle(VKind.Police, node + across * (k * 36), MathF.Atan2(across.Y, across.X), Pal.Police)
+            { Ai = true, Blockade = true };
+            vehicles.Add(v);
+        }
+        Say("Policejni zataras pred tebou!");
+    }
+
+    void UpdateHeli(float dt)
+    {
+        var h = heli;
+        if (h == null) return;
+        h.Rotor += dt * 28f;
+        h.Bob += dt * 3.2f;
+
+        var to = pPos - h.Pos;
+        float dist = to.Length();
+        var dir = dist > 1 ? to / dist : new Vector2(1, 0);
+
+        if (Stars < 4)   // ztratil zajem - odleti a zmizi
+        {
+            h.Pos -= dir * 240f * dt;
+            if (dist > 1700) heli = null;
+            return;
+        }
+
+        // drzi odstup ~320 a bocne krouzi kolem hrace
+        float radial = dist > 330 ? 220f : dist < 250 ? -140f : 0f;
+        var perp = new Vector2(-dir.Y, dir.X);
+        h.Pos += dir * radial * dt + perp * 120f * dt;
+
+        h.FireT -= dt;
+        if (deadT <= 0 && dist < 540 && h.FireT <= 0)
+        {
+            h.FireT = 0.55f;
+            float a = MathF.Atan2(to.Y, to.X) + Rnd(-0.07f, 0.07f);
+            Shoot(h.Pos + DirOf(a) * 20, a, 8, 0.05f, 900, 600, false, false, null);
+        }
+    }
+
+    void DamageHeli(float dmg, bool byPlayer)
+    {
+        var h = heli;
+        if (h == null || dmg <= 0) return;
+        if (byPlayer) h.HitByPlayer = true;
+        h.Hp -= dmg;
+        if (h.Hp <= 0)
+        {
+            Explode(h.Pos, 160, 170, h.HitByPlayer);
+            if (h.HitByPlayer)
+            {
+                carsDestroyed++;
+                heat += 30;
+                DropLoot(h.Pos, 1f); DropLoot(h.Pos, 1f);
+                AddMoney(3500, h.Pos);
+            }
+            heli = null;
+        }
     }
 
     void Cleanup()
@@ -1003,6 +1243,8 @@ public class Game
         totalChaos += quest.Reward;
         popups.Add(new Popup { Pos = pPos, Text = $"QUEST +${quest.Reward}", Life = 2.2f });
         Say($"Quest splnen! +${quest.Reward}");
+        Sfx.Play(Snd.Quest);
+        SaveGame();
         NewQuest();
     }
 
@@ -1041,7 +1283,9 @@ public class Game
     void DropLoot(Vector2 pos, float chance)
     {
         if (pickups.Count > 30 || Rnd() > chance) return;
-        pickups.Add(new Pickup { Pos = pos + new Vector2(Rnd(-12, 12), Rnd(-12, 12)), Kind = Rnd() < 0.45f ? 0 : 1 });
+        float r = Rnd();
+        int kind = r < 0.42f ? 0 : r < 0.82f ? 1 : 2;   // 0 zdravi, 1 penize, 2 brneni
+        pickups.Add(new Pickup { Pos = pos + new Vector2(Rnd(-12, 12), Rnd(-12, 12)), Kind = kind });
     }
 
     void UpdatePickups(float dt)
@@ -1059,11 +1303,19 @@ public class Game
                 pHp = MathF.Min(100, pHp + 35);
                 if (car != null) car.Hp = MathF.Min(car.MaxHp, car.Hp + 30);
                 popups.Add(new Popup { Pos = pPos, Text = "+ZDRAVI", Life = 1.2f });
+                Sfx.Play(Snd.Pickup);
+            }
+            else if (k.Kind == 2)
+            {
+                pArmor = MathF.Min(100, pArmor + 50);
+                popups.Add(new Popup { Pos = pPos, Text = "+BRNENI", Life = 1.2f });
+                Sfx.Play(Snd.Pickup);
             }
             else
             {
                 money += 100; totalChaos += 100;
                 popups.Add(new Popup { Pos = pPos, Text = "+$100", Life = 1.2f });
+                Sfx.Play(Snd.Coin);
             }
         }
         pickups.RemoveAll(k => k.Life <= 0);
@@ -1098,6 +1350,26 @@ public class Game
     }
 
     // ---------- banka
+
+    bool NearDoor(Vector2 door) => car == null && deadT <= 0 && Vector2.Distance(pPos, door) < 90;
+
+    void UseHospital()
+    {
+        if (pHp >= 100) { Say("Jsi plne zdravy."); return; }
+        if (money < HospitalFee) { Say($"Nemocnice stoji ${HospitalFee}."); return; }
+        money -= HospitalFee;
+        pHp = 100;
+        popups.Add(new Popup { Pos = pPos, Text = "+PLNE ZDRAVI", Life = 1.4f });
+        Say($"Nemocnice te vylecila za ${HospitalFee}.");
+    }
+
+    void UseSafehouse()
+    {
+        heat = 0; combo = 0;
+        SaveGame();
+        popups.Add(new Popup { Pos = pPos, Text = "ULOZENO", Life = 1.6f });
+        Say($"Ukryt: hvezdicky smazany, hra ulozena (rekord ${bestChaos}).");
+    }
 
     bool CanRobBank() =>
         !robbing && bankCd <= 0 && deadT <= 0 && Vector2.Distance(pPos, world.BankDoor) < 90;
@@ -1135,6 +1407,8 @@ public class Game
             money += loot; totalChaos += loot;
             popups.Add(new Popup { Pos = pPos, Text = $"BANKA +${loot}", Life = 2.5f });
             Say($"Banka vykradena! +${loot} - utikej!");
+            Sfx.Play(Snd.Bank);
+            SaveGame();
             heat = MathF.Max(heat, 110f);
         }
     }
@@ -1159,6 +1433,12 @@ public class Game
 
         foreach (var sc in scorches) sc.Age += dt;
         scorches.RemoveAll(sc => sc.Age > 10f);
+
+        foreach (var m in muzzles) m.T -= dt;
+        muzzles.RemoveAll(m => m.T <= 0);
+
+        foreach (var tm in tireMarks) tm.Age += dt;
+        tireMarks.RemoveAll(tm => tm.Age > 8f);
 
         foreach (var e in explosions) e.T += dt;
         explosions.RemoveAll(e => e.T > Explosion.Dur);
@@ -1216,6 +1496,7 @@ public class Game
 
     void Activate(int i)
     {
+        Sfx.Play(Snd.Click);
         if (i == 0) { scr = Scr.Play; fireT = 0.3f; return; }
         if (i == 1) { helpBack = scr; scr = Scr.Help; return; }
         if (scr == Scr.Menu) Quit = true; else WantRestart = true;
@@ -1240,10 +1521,36 @@ public class Game
         vx0 = cam.Target.X - hw; vx1 = cam.Target.X + hw;
         vy0 = cam.Target.Y - hh; vy1 = cam.Target.Y + hh;
 
+        world.Night = Night;
         world.Draw(vx0, vy0, vx1, vy1);
 
+        // nocni ztmaveni zeme a budov + pouliclni lampy
+        float night = Night;
+        if (night > 0.04f)
+        {
+            Raylib.DrawRectangle((int)vx0, (int)vy0, (int)(vx1 - vx0), (int)(vy1 - vy0),
+                Raylib.Fade(new Color(8, 12, 38, 255), night * 0.62f));
+
+            var lamp = new Color(255, 220, 150, 255);
+            int i0 = Math.Max(0, (int)(vx0 / World.Cell)), i1 = Math.Min(World.Grid, (int)(vx1 / World.Cell) + 1);
+            int j0 = Math.Max(0, (int)(vy0 / World.Cell)), j1 = Math.Min(World.Grid, (int)(vy1 / World.Cell) + 1);
+            for (int i = i0; i <= i1; i++)
+                for (int j = j0; j <= j1; j++)
+                {
+                    var n = World.Node(i, j);
+                    Raylib.DrawCircleV(n, 70, Raylib.Fade(lamp, night * 0.16f));
+                    Raylib.DrawCircleV(n, 6, Raylib.Fade(lamp, night * 0.9f));
+                }
+        }
+
+        foreach (var tm in tireMarks)
+        {
+            if (!InView(tm.Pos)) continue;
+            Raylib.DrawCircleV(tm.Pos, 3.2f, Raylib.Fade(Pal.Black, 0.30f * (1f - tm.Age / 8f)));
+        }
+
         foreach (var p in people)
-            if (p.Dead && InView(p.Pos)) Raylib.DrawCircleV(p.Pos, 11, Raylib.Fade(Pal.Blood, MathF.Max(0.25f, 1f - p.DeadT / 25f)));
+            if (p.Dead && InView(p.Pos)) DrawCorpse(p);
         if (deadT > 0) Raylib.DrawCircleV(pPos, 13, Pal.Blood);
 
         foreach (var sc in scorches)
@@ -1296,6 +1603,12 @@ public class Game
                 Raylib.DrawRectangle(kx - 6, ky - 2, 12, 4, Pal.Red);
                 Raylib.DrawRectangle(kx - 2, ky - 6, 4, 12, Pal.Red);
             }
+            else if (k.Kind == 2)
+            {
+                Raylib.DrawCircleV(k.Pos, 11 * bob, new Color(70, 120, 230, 255));
+                Raylib.DrawCircleLines(kx, ky, 11 * bob, Pal.White);
+                Raylib.DrawText("+", kx - 5, ky - 9, 20, Pal.White);
+            }
             else
             {
                 Raylib.DrawCircleV(k.Pos, 11 * bob, new Color(60, 170, 80, 255));
@@ -1309,9 +1622,43 @@ public class Game
 
         if (car == null && deadT <= 0)
         {
-            Raylib.DrawCircleV(pPos, 9, new Color(245, 200, 60, 255));
-            Raylib.DrawCircleLines((int)pPos.X, (int)pPos.Y, 9, Pal.Black);
-            Raylib.DrawLineEx(pPos, pPos + DirOf(pAngle) * 18, 4, Pal.Dark);
+            var fwd = DirOf(pAngle);
+            var side = new Vector2(-fwd.Y, fwd.X);
+            float swing = MathF.Sin(pWalk) * 3.6f;
+            var jacket = new Color(210, 150, 40, 255);
+            var skin = new Color(238, 198, 158, 255);
+
+            Raylib.DrawCircleV(pPos + new Vector2(2, 3), 9f, Raylib.Fade(Pal.Black, 0.32f));
+
+            // nohy
+            var legMov = side * 3.4f + fwd * swing;
+            Raylib.DrawCircleV(pPos + legMov, 3.1f, new Color(45, 45, 60, 255));
+            Raylib.DrawCircleV(pPos - legMov, 3.1f, new Color(45, 45, 60, 255));
+
+            // telo
+            Raylib.DrawCircleV(pPos, 8.2f, jacket);
+            Raylib.DrawCircleLines((int)pPos.X, (int)pPos.Y, 8.2f, Raylib.Fade(Pal.Black, 0.6f));
+
+            if (holstered)
+            {
+                // ruce u tela (kyvaji se pri chuzi), zbran schovana na zadech
+                Raylib.DrawCircleV(pPos + side * 7 - fwd * swing * 0.6f, 2.6f, skin);
+                Raylib.DrawCircleV(pPos - side * 7 + fwd * swing * 0.6f, 2.6f, skin);
+                if (weaponIdx != 0)
+                    Raylib.DrawLineEx(pPos - fwd * 2 - side * 5, pPos - fwd * 2 + side * 5, 3, Pal.Dark);
+            }
+            else
+            {
+                // ruce drzi zbran ve smeru mireni (lehky zpetny raz hned po vystrelu)
+                float kick = fireT > 0 && fireT > Weapons.All[weaponIdx].Cooldown - 0.06f ? -3f : 0f;
+                var gunBase = pPos + fwd * (7 + kick);
+                Raylib.DrawCircleV(gunBase + side * 3, 2.6f, skin);
+                Raylib.DrawCircleV(gunBase - side * 3, 2.6f, skin);
+                Raylib.DrawLineEx(gunBase, pPos + fwd * (18 + kick), 4, Pal.Dark);
+            }
+
+            // hlava
+            Raylib.DrawCircleV(pPos + fwd * 1.5f, 4.8f, skin);
         }
 
         foreach (var b in bullets)
@@ -1325,6 +1672,19 @@ public class Game
             }
         }
 
+        foreach (var m in muzzles)
+        {
+            if (!InView(m.Pos)) continue;
+            float mt = m.T / 0.06f;
+            var fdir = DirOf(m.Ang);
+            var fside = new Vector2(-fdir.Y, fdir.X);
+            var tip = m.Pos + fdir * (10 + mt * 6);
+            // hvezdicovity zableskovy kuzel
+            Raylib.DrawTriangle(m.Pos + fside * 4f, m.Pos - fside * 4f, tip, Raylib.Fade(Pal.Yellow, mt));
+            Raylib.DrawCircleV(m.Pos, 4f * mt, Raylib.Fade(Pal.White, mt));
+            Raylib.DrawCircleV(tip, 2.5f * mt, Raylib.Fade(Pal.Fire, mt));
+        }
+
         foreach (var e in explosions)
         {
             float t = e.T / Explosion.Dur;
@@ -1332,6 +1692,9 @@ public class Game
             Raylib.DrawCircleV(e.Pos, r, Raylib.Fade(Pal.Fire, (1f - t) * 0.85f));
             Raylib.DrawCircleV(e.Pos, r * 0.6f, Raylib.Fade(Pal.Yellow, (1f - t) * 0.9f));
             Raylib.DrawCircleV(e.Pos, r * 0.25f, Raylib.Fade(Pal.White, (1f - t)));
+            // rozpinajici se razova vlna
+            float ring = e.Radius * (0.4f + t * 1.4f);
+            Raylib.DrawCircleLines((int)e.Pos.X, (int)e.Pos.Y, ring, Raylib.Fade(Pal.White, (1f - t) * 0.5f));
         }
 
         foreach (var p in particles)
@@ -1342,6 +1705,8 @@ public class Game
             else if (p.Kind == 1) Raylib.DrawCircleV(p.Pos, p.Size * (1.8f - t * 0.8f), Raylib.Fade(Pal.Smoke, t * 0.6f));
             else Raylib.DrawCircleV(p.Pos, p.Size * 0.5f, Raylib.Fade(Pal.Yellow, t));
         }
+
+        if (heli != null && InView(heli.Pos)) DrawHeli(heli);
 
         if (quest != null && quest.Type == QType.Checkpoint)
         {
@@ -1373,6 +1738,19 @@ public class Game
         Color F(Color c) => wreck ? Raylib.Fade(c, wa) : c;
 
         Raylib.DrawRectanglePro(new Rectangle(v.Pos.X + 3, v.Pos.Y + 3, v.Length, v.Width), origin, deg, Raylib.Fade(Pal.Black, 0.3f * wa));
+
+        // kola (cerne obdelniky trcici zpod karoserie) - jen auta, ne tank
+        if (v.Kind != VKind.Tank)
+        {
+            var tyre = F(new Color(24, 24, 28, 255));
+            float wl = v.Length * 0.22f, ww = 6f;
+            foreach (float fx in new[] { 0.3f, -0.26f })
+                foreach (float sy in new[] { 1f, -1f })
+                {
+                    var wp = v.Pos + fwd * (v.Length * fx) + right * (sy * (v.Width / 2 + 1));
+                    Raylib.DrawRectanglePro(new Rectangle(wp.X, wp.Y, wl, ww), new Vector2(wl / 2, ww / 2), deg, tyre);
+                }
+        }
 
         if (v.Kind == VKind.Tank)
         {
@@ -1409,7 +1787,14 @@ public class Game
             new Vector2(v.Length * 0.1f, v.Width * 0.35f), deg, Raylib.Fade(Pal.White, 0.14f));
 
         if (v.Kind != VKind.Tank)
-            Raylib.DrawCircleV(v.Pos + fwd * (v.Length / 2 + 18), 20, Raylib.Fade(Pal.Yellow, 0.07f));
+        {
+            float beam = 0.06f + Night * 0.5f;
+            var nose = v.Pos + fwd * (v.Length / 2);
+            var far = nose + fwd * (90 + Night * 70);
+            Raylib.DrawTriangle(nose + right * 7, nose - right * 7, far + right * 34, Raylib.Fade(Pal.Yellow, beam * 0.5f));
+            Raylib.DrawTriangle(nose + right * 7, far + right * 34, far - right * 34, Raylib.Fade(Pal.Yellow, beam * 0.5f));
+            Raylib.DrawCircleV(nose + fwd * 16, 16, Raylib.Fade(Pal.Yellow, beam * 0.6f));
+        }
         var tl = v.Pos - fwd * (v.Length / 2 - 2);
         Color tail = v.Speed < -5 ? Pal.White : new Color(190, 30, 30, 255);
         Raylib.DrawCircleV(tl + right * (v.Width / 2 - 4), 2.2f, tail);
@@ -1418,6 +1803,33 @@ public class Game
         var hl = v.Pos + fwd * (v.Length / 2 - 2);
         Raylib.DrawCircleV(hl + right * (v.Width / 2 - 4), 2.5f, Pal.Yellow);
         Raylib.DrawCircleV(hl - right * (v.Width / 2 - 4), 2.5f, Pal.Yellow);
+
+        if (v.Kind == VKind.Civil)
+        {
+            if (v.Model == VModel.Ambulance)
+            {
+                // cerveny kriz na strese + modre blikajici svetlo
+                Raylib.DrawRectanglePro(new Rectangle(v.Pos.X, v.Pos.Y, 14, 4), new Vector2(7, 2), deg, Pal.Red);
+                Raylib.DrawRectanglePro(new Rectangle(v.Pos.X, v.Pos.Y, 4, 14), new Vector2(2, 7), deg, Pal.Red);
+                bool amb = ((int)(animT * 7)) % 2 == 0;
+                Raylib.DrawCircleV(v.Pos + fwd * (v.Length * 0.32f), 4, amb ? Pal.Red : Pal.Blue);
+            }
+            else if (v.Model == VModel.Bus)
+            {
+                // radky bocnich oken
+                for (float k = -0.32f; k <= 0.32f; k += 0.16f)
+                {
+                    var wp = v.Pos + fwd * (v.Length * k);
+                    Raylib.DrawRectanglePro(new Rectangle(wp.X, wp.Y, v.Length * 0.1f, v.Width * 0.82f),
+                        new Vector2(v.Length * 0.05f, v.Width * 0.41f), deg, Pal.Glass);
+                }
+            }
+            else if (v.Model == VModel.Bike)
+            {
+                Raylib.DrawCircleV(v.Pos, 5.5f, new Color(40, 40, 50, 255));          // ridic
+                Raylib.DrawCircleV(v.Pos + fwd * 2, 3.2f, new Color(230, 200, 160, 255)); // helma
+            }
+        }
 
         if (v.Kind == VKind.Police)
         {
@@ -1433,17 +1845,119 @@ public class Game
             Raylib.DrawRectanglePro(new Rectangle(v.Pos.X, v.Pos.Y, v.Length, v.Width), origin, deg, Raylib.Fade(Pal.Black, 0.45f));
     }
 
+    void DrawHeli(Heli h)
+    {
+        float bob = MathF.Sin(h.Bob) * 4f;
+        var to = pPos - h.Pos;
+        float deg = MathF.Atan2(to.Y, to.X) * RadToDeg;
+        var body = h.Pos + new Vector2(0, bob);
+
+        // stin na zemi (vrtulnik leti vysoko)
+        Raylib.DrawCircleV(h.Pos + new Vector2(20, 38), 18, Raylib.Fade(Pal.Black, 0.26f));
+
+        // ocasni nosnik + trup
+        Raylib.DrawRectanglePro(new Rectangle(body.X, body.Y, 52, 8), new Vector2(40, 4), deg, new Color(36, 42, 50, 255));
+        Raylib.DrawRectanglePro(new Rectangle(body.X, body.Y, 34, 22), new Vector2(17, 11), deg, new Color(48, 56, 66, 255));
+        // kokpit
+        var fwd = DirOf(deg / RadToDeg);
+        Raylib.DrawCircleV(body + fwd * 9, 6, Pal.Glass);
+        // policejni svetlo
+        bool bl = ((int)(animT * 8)) % 2 == 0;
+        Raylib.DrawCircleV(body, 3.5f, bl ? Pal.Red : Pal.Blue);
+
+        // rotujici hlavni rotor
+        for (int i = 0; i < 2; i++)
+        {
+            float a = h.Rotor + i * MathF.PI / 2;
+            var d = DirOf(a);
+            Raylib.DrawLineEx(body - d * 34, body + d * 34, 3, Raylib.Fade(new Color(20, 20, 24, 255), 0.85f));
+        }
+        Raylib.DrawCircleV(body, 3, new Color(20, 20, 24, 255));
+
+        // HP lista kdyz poskozeny
+        if (h.Hp < h.MaxHp)
+        {
+            Raylib.DrawRectangle((int)body.X - 22, (int)body.Y - 34, 44, 5, new Color(20, 20, 26, 255));
+            Raylib.DrawRectangle((int)body.X - 21, (int)body.Y - 33, (int)(42 * Math.Clamp(h.Hp / h.MaxHp, 0, 1)), 3, Pal.Red);
+        }
+    }
+
     void DrawPerson(Person p)
     {
+        var fwd = DirOf(p.Angle);
+        var side = new Vector2(-fwd.Y, fwd.X);
+        bool armed = p.Kind != PKind.Civil;
+        float swing = MathF.Sin(p.AnimWalk) * 3.4f;   // vykyv nohou/rukou
+
+        // stin
         Raylib.DrawCircleV(p.Pos + new Vector2(2, 3), 8.5f, Raylib.Fade(Pal.Black, 0.3f));
-        Raylib.DrawCircleV(p.Pos, 8.5f, p.Col);
-        Raylib.DrawCircleLines((int)p.Pos.X, (int)p.Pos.Y, 8.5f, Raylib.Fade(Pal.Black, 0.6f));
-        Color head = p.Kind == PKind.Cop ? new Color(25, 35, 120, 255)
-                   : p.Kind == PKind.Soldier ? new Color(55, 70, 35, 255)
-                   : new Color(240, 200, 160, 255);
-        Raylib.DrawCircleV(p.Pos + DirOf(p.Angle) * 1.5f, 4.5f, head);
-        if (p.Kind != PKind.Civil)
-            Raylib.DrawLineEx(p.Pos, p.Pos + DirOf(p.Angle) * 16, 3, Pal.Dark);
+
+        // nohy (kracejici - predkrok/zakrok podle faze)
+        Color pants = p.Kind == PKind.Soldier ? new Color(58, 70, 40, 255)
+                    : p.Kind == PKind.Cop ? new Color(28, 38, 86, 255)
+                    : new Color(45, 45, 60, 255);
+        var legL = p.Pos + side * 3.2f + fwd * swing;
+        var legR = p.Pos - side * 3.2f - fwd * swing;
+        Raylib.DrawCircleV(legL, 2.9f, pants);
+        Raylib.DrawCircleV(legR, 2.9f, pants);
+
+        // telo
+        Raylib.DrawCircleV(p.Pos, 7.6f, p.Col);
+        Raylib.DrawCircleLines((int)p.Pos.X, (int)p.Pos.Y, 7.6f, Raylib.Fade(Pal.Black, 0.55f));
+
+        Color skin = new Color(238, 198, 158, 255);
+        if (armed)
+        {
+            // obe ruce drzi zbran pred telem
+            var gunBase = p.Pos + fwd * 6;
+            var handL = gunBase + side * 3;
+            var handR = gunBase - side * 3;
+            Raylib.DrawCircleV(handL, 2.4f, skin);
+            Raylib.DrawCircleV(handR, 2.4f, skin);
+            Color gun = p.Kind == PKind.Soldier ? new Color(35, 40, 30, 255) : new Color(30, 30, 34, 255);
+            Raylib.DrawLineEx(gunBase, p.Pos + fwd * (p.Kind == PKind.Soldier ? 17 : 14), 3.2f, gun);
+        }
+        else
+        {
+            // ruce svisaji a kyvaji se opacne nez nohy
+            Raylib.DrawCircleV(p.Pos + side * 6 - fwd * swing * 0.7f, 2.4f, p.Col);
+            Raylib.DrawCircleV(p.Pos - side * 6 + fwd * swing * 0.7f, 2.4f, p.Col);
+        }
+
+        // hlava
+        var hp = p.Pos + fwd * 1.5f;
+        Raylib.DrawCircleV(hp, 4.6f, skin);
+
+        // pokryvka hlavy
+        if (p.Kind == PKind.Cop)
+        {
+            Raylib.DrawCircleV(hp, 4.6f, new Color(24, 34, 110, 255));
+            Raylib.DrawCircleV(hp + fwd * 3, 2.2f, new Color(20, 28, 90, 255));   // ksilt
+        }
+        else if (p.Kind == PKind.Soldier)
+        {
+            Raylib.DrawCircleV(hp, 4.8f, new Color(52, 66, 34, 255));            // helma
+            Raylib.DrawCircleLines((int)hp.X, (int)hp.Y, 4.8f, Raylib.Fade(Pal.Black, 0.5f));
+        }
+    }
+
+    void DrawCorpse(Person p)
+    {
+        float fade = MathF.Max(0.25f, 1f - p.DeadT / 25f);
+        var fwd = DirOf(p.DeathAng);
+        var side = new Vector2(-fwd.Y, fwd.X);
+
+        // rozlevajici se kaluz krve
+        float pool = MathF.Min(14f, 7f + p.DeadT * 2.2f);
+        Raylib.DrawCircleV(p.Pos, pool, Raylib.Fade(Pal.Blood, 0.5f * fade));
+        Raylib.DrawCircleV(p.Pos + side * 4, pool * 0.6f, Raylib.Fade(Pal.Blood, 0.4f * fade));
+
+        // lezici telo (protahle podel smeru padu)
+        Color body = p.Kind == PKind.Cop ? new Color(40, 60, 170, 255)
+                   : p.Kind == PKind.Soldier ? new Color(70, 88, 46, 255)
+                   : p.Col;
+        for (int i = -1; i <= 1; i++)
+            Raylib.DrawCircleV(p.Pos + fwd * (i * 4.5f), i == 1 ? 3.6f : 5.2f, Raylib.Fade(body, fade));
     }
 
     void DrawVignette()
@@ -1483,7 +1997,7 @@ public class Game
         var green = new Color(120, 230, 120, 255);
 
         // levy horni panel
-        Panel(new Rectangle(12, 8, 340, 204), panelCol);
+        Panel(new Rectangle(12, 8, 340, 232), panelCol);
         Txt($"${money}", 24, 14, 40, green);
 
         int stars = Stars;
@@ -1506,24 +2020,30 @@ public class Game
         Bar(56, 128, 240, 16, pHp / 100f, hpCol);
         Txt($"{(int)pHp}", 304, 126, 18, Pal.White);
 
+        Txt("AP", 24, 150, 16, new Color(120, 170, 240, 255));
+        Bar(56, 150, 240, 12, pArmor / 100f, new Color(70, 120, 230, 255));
+
         if (car != null)
         {
-            Txt("AUTO", 24, 152, 16, Pal.White);
-            Bar(70, 152, 226, 16, car.Hp / car.MaxHp, new Color(70, 170, 230, 255));
+            Txt("AUTO", 24, 170, 16, Pal.White);
+            Bar(70, 170, 226, 14, car.Hp / car.MaxHp, new Color(70, 170, 230, 255));
             if (car.State == VState.Burning && blink)
             {
                 string w = "AUTO HORI! VYSTUP (E)";
                 int ww = Raylib.MeasureText(w, 28);
-                Txt(w, W / 2 - ww / 2, 206, 28, Pal.Red);
+                Txt(w, W / 2 - ww / 2, 240, 28, Pal.Red);
             }
         }
 
-        Txt($"Auta: {carsDestroyed}   Obeti: {kills}   Chaos: ${totalChaos}", 24, 182, 16, new Color(210, 210, 215, 255));
+        Txt($"Auta: {carsDestroyed}   Obeti: {kills}   Chaos: ${totalChaos}", 24, 192, 16, new Color(210, 210, 215, 255));
+        Txt($"Rekord: ${bestChaos}", 24, 212, 15, new Color(250, 215, 90, 255));
 
         // zbran vlevo dole
-        string wn = car != null && car.Kind == VKind.Tank ? "Tankovy kanon" : Weapons.All[weaponIdx].Name;
+        bool onFootHolstered = car == null && holstered;
+        string wn = car != null && car.Kind == VKind.Tank ? "Tankovy kanon"
+                  : Weapons.All[weaponIdx].Name + (onFootHolstered ? "  (schovano - F)" : "");
         Panel(new Rectangle(12, H - 100, 340, 62), panelCol);
-        Txt(wn, 24, H - 94, 26, Pal.White);
+        Txt(wn, 24, H - 94, 26, onFootHolstered ? Pal.Gray : Pal.White);
         for (int i = 0; i < Weapons.All.Length; i++)
         {
             Color c = i == weaponIdx ? Pal.Yellow : owned[i] ? new Color(170, 170, 176, 255) : new Color(60, 60, 66, 255);
@@ -1569,6 +2089,22 @@ public class Game
             }
         }
 
+        // navigacni sipka k cili questu (checkpoint)
+        if (quest != null && quest.Type == QType.Checkpoint)
+        {
+            var sp = Raylib.GetWorldToScreen2D(quest.Target, cam);
+            bool off = sp.X < 60 || sp.X > W - 60 || sp.Y < 90 || sp.Y > H - 90;
+            if (off)
+            {
+                var dir = Vector2.Normalize(quest.Target - pPos);
+                var at = new Vector2(W / 2f, H / 2f) + dir * 150;
+                Raylib.DrawPoly(at, 3, 20, MathF.Atan2(dir.Y, dir.X) * RadToDeg, Pal.Yellow);
+                Raylib.DrawPolyLines(at, 3, 20, MathF.Atan2(dir.Y, dir.X) * RadToDeg, Pal.Black);
+                int m = Math.Max(0, (int)(Vector2.Distance(pPos, quest.Target) / 10));
+                Txt($"{m} m", (int)at.X - 20, (int)at.Y + 22, 16, Pal.Yellow);
+            }
+        }
+
         // loupez banky / lakovani / vyzva
         if (robbing)
         {
@@ -1588,6 +2124,18 @@ public class Game
             int bw2 = Raylib.MeasureText(bt, 26);
             Txt(bt, W / 2 - bw2 / 2, H - 140, 26, bankCd > 0 ? Pal.Gray : Pal.Yellow);
         }
+        else if (NearDoor(world.HospitalDoor))
+        {
+            string ht = $"[E] NEMOCNICE - plne zdravi (${HospitalFee})";
+            int hw = Raylib.MeasureText(ht, 26);
+            Txt(ht, W / 2 - hw / 2, H - 140, 26, new Color(250, 120, 120, 255));
+        }
+        else if (NearDoor(world.SafehouseDoor))
+        {
+            string st = "[E] UKRYT - smazat hvezdy a ulozit";
+            int sw3 = Raylib.MeasureText(st, 26);
+            Txt(st, W / 2 - sw3 / 2, H - 140, 26, new Color(120, 220, 150, 255));
+        }
 
         // hlaska
         if (msgT > 0)
@@ -1605,7 +2153,7 @@ public class Game
             Txt("WASTED", W / 2 - tw / 2, H / 2 - 48, 96, Pal.Red);
         }
 
-        Txt("P / ESC pauza   M mapa   B obchod   E auto   Q zbran", 22, H - 28, 16, new Color(200, 200, 205, 255));
+        Txt("P/ESC pauza  M mapa  B obchod  E auto  Q zbran  F schovat/vytahnout", 22, H - 28, 16, new Color(200, 200, 205, 255));
 
         DrawMinimap();
     }
@@ -1630,6 +2178,13 @@ public class Game
         int sw = Raylib.MeasureText(sub, scr == Scr.Menu ? 24 : 22);
         Txt(sub, W / 2 - sw / 2, ty + (scr == Scr.Menu ? 118 : 90), scr == Scr.Menu ? 24 : 22, new Color(220, 220, 225, 255));
 
+        if (scr == Scr.Menu && bestChaos > 0)
+        {
+            string rec = $"Rekord: ${bestChaos}";
+            int rw = Raylib.MeasureText(rec, 22);
+            Txt(rec, W / 2 - rw / 2, ty + 150, 22, Pal.Yellow);
+        }
+
         var items = CurItems;
         for (int i = 0; i < items.Length; i++)
         {
@@ -1649,36 +2204,40 @@ public class Game
 
     void DrawHelp()
     {
-        int pw = 720, ph = 590, px = W / 2 - pw / 2, py = H / 2 - ph / 2;
+        int pw = 760, ph = 640, px = W / 2 - pw / 2, py = H / 2 - ph / 2;
         Raylib.DrawRectangleRounded(new Rectangle(px - 3, py - 3, pw + 6, ph + 6), 0.04f, 8, Pal.Yellow);
         Raylib.DrawRectangleRounded(new Rectangle(px, py, pw, ph), 0.04f, 8, new Color(24, 24, 30, 255));
-        Txt("OVLADANI", px + 28, py + 20, 36, Pal.Yellow);
+        Txt("OVLADANI", px + 28, py + 18, 34, Pal.Yellow);
 
         string[,] rows =
         {
             { "WASD / sipky", "chuze, jizda" },
-            { "Shift", "beh" },
+            { "Shift", "beh (pesky) / nitro boost (v aute)" },
             { "Mys (LMB)", "strelba / kanon tanku" },
-            { "E", "nastup / vystup z auta" },
-            { "Space", "rucni brzda" },
+            { "E", "nastup/vystup z auta, pouziti budovy" },
+            { "Space", "rucni brzda (smyk zanecha stopy)" },
             { "Q", "dalsi zbran" },
-            { "B", "obchod se zbranemi" },
+            { "F", "schovat / vytahnout zbran" },
+            { "B", "obchod (zbrane 1-6, brneni 7)" },
             { "N", "novy sidequest" },
             { "M", "velka mapa" },
             { "E u banky", "vykrast banku (12 s)" },
+            { "E u nemocnice", "plne vyleceni ($200)" },
+            { "E u ukrytu", "smazat hvezdy + ulozit hru" },
             { "P / ESC", "pauza" },
         };
         for (int i = 0; i < rows.GetLength(0); i++)
         {
-            Txt(rows[i, 0], px + 28, py + 82 + i * 32, 22, Pal.White);
-            Txt(rows[i, 1], px + 250, py + 82 + i * 32, 22, new Color(200, 200, 205, 255));
+            Txt(rows[i, 0], px + 28, py + 66 + i * 28, 21, Pal.White);
+            Txt(rows[i, 1], px + 260, py + 66 + i * 28, 21, new Color(200, 200, 205, 255));
         }
 
-        Txt("TIPY", px + 28, py + 450, 22, Pal.Yellow);
-        Txt("Nic rychle za sebou = chaos combo az x5. Z vraku padaji lekarnicky a penize.", px + 28, py + 480, 18, Pal.White);
-        Txt("Lakovna (ruzova budova, $300): zajed k vratum - oprava a smazani hvezdicek.", px + 28, py + 504, 18, Pal.White);
-        Txt("Banka (zlata budova): vyloupeni dava $4000+, ale hlidaji te 3 hvezdy.", px + 28, py + 528, 18, Pal.White);
-        Txt("Klikni nebo stiskni klavesu pro navrat", px + 28, py + 560, 16, Pal.Gray);
+        Txt("TIPY", px + 28, py + 470, 22, Pal.Yellow);
+        Txt("Nic rychle za sebou = chaos combo az x5. Z vraku padaji lekarnicky, penize i brneni.", px + 28, py + 498, 17, Pal.White);
+        Txt("Mesto zije v cyklu den/noc - v noci sviti lampy, okna a reflektory aut.", px + 28, py + 520, 17, Pal.White);
+        Txt("Na 3+ hvezdach stavi policie zatarasy, na 5 hvezdach prileti bojovy vrtulnik.", px + 28, py + 542, 17, Pal.White);
+        Txt("Jezdi i dodavky, autobusy, motorky a sanitky. Granat (zbran 6) lob na dalku.", px + 28, py + 564, 17, Pal.White);
+        Txt("Klikni nebo stiskni klavesu pro navrat", px + 28, py + 598, 16, Pal.Gray);
     }
 
     void DrawMinimap()
@@ -1706,6 +2265,8 @@ public class Game
             foreach (var p in people)
                 if (!p.Dead && p.Kind != PKind.Civil)
                     Raylib.DrawCircle(mx + (int)(p.Pos.X * s), my + (int)(p.Pos.Y * s), 2, Pal.Blue);
+            if (heli != null)
+                Raylib.DrawCircle(mx + (int)(heli.Pos.X * s), my + (int)(heli.Pos.Y * s), 3, Pal.Red);
         }
 
         float vw = W / cam.Zoom * s, vh = H / cam.Zoom * s;
@@ -1716,6 +2277,8 @@ public class Game
 
         Raylib.DrawCircle(mx + (int)(spray.X * s), my + (int)(spray.Y * s), 4, new Color(255, 90, 180, 255));
         Raylib.DrawCircle(mx + (int)(world.BankDoor.X * s), my + (int)(world.BankDoor.Y * s), 4, new Color(240, 200, 60, 255));
+        Raylib.DrawCircle(mx + (int)(world.HospitalDoor.X * s), my + (int)(world.HospitalDoor.Y * s), 4, new Color(250, 110, 110, 255));
+        Raylib.DrawCircle(mx + (int)(world.SafehouseDoor.X * s), my + (int)(world.SafehouseDoor.Y * s), 4, new Color(110, 220, 150, 255));
         float pa = (car != null ? car.Angle : pAngle) * RadToDeg;
         Raylib.DrawPoly(new Vector2(mx + pPos.X * s, my + pPos.Y * s), 3, 6, pa, Pal.White);
         Txt("M = velka mapa", mx, my - 20, 14, Pal.White);
@@ -1729,6 +2292,8 @@ public class Game
         float bs = World.Cell - World.Road;
         var gold = new Color(240, 200, 60, 255);
         var pink = new Color(255, 90, 180, 255);
+        var hred = new Color(250, 110, 110, 255);
+        var sgreen = new Color(110, 220, 150, 255);
 
         void R(Rectangle r, Color c) => Raylib.DrawRectangle(mx + (int)(r.X * s), my + (int)(r.Y * s),
             Math.Max(1, (int)(r.Width * s)), Math.Max(1, (int)(r.Height * s)), c);
@@ -1743,6 +2308,8 @@ public class Game
         foreach (var b in world.Buildings) R(b, new Color(128, 128, 134, 255));
         R(world.Bank, gold);
         R(world.Garage, pink);
+        R(world.Hospital, hred);
+        R(world.Safehouse, sgreen);
 
         // souradnice ulic
         for (int k = 0; k <= World.Grid; k++)
@@ -1786,7 +2353,8 @@ public class Game
         (string, Color)[] legend =
         {
             ("Ty", Pal.White), ("Banka (E = vykrast)", gold), ("Lakovna (zajed autem)", pink),
-            ("Cil questu", Pal.Yellow), ("Policie", Pal.Blue), ("Armada", Pal.Red),
+            ("Nemocnice (E = lecba)", hred), ("Ukryt (E = ulozit)", sgreen),
+            ("Cil questu", Pal.Yellow), ("Policie", Pal.Blue), ("Armada / vrtulnik", Pal.Red),
         };
         for (int i = 0; i < legend.Length; i++)
         {
@@ -1799,9 +2367,9 @@ public class Game
     void DrawShop()
     {
         Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(Pal.Black, 0.6f));
-        int px = W / 2 - 300, py = H / 2 - 190;
-        Raylib.DrawRectangleRounded(new Rectangle(px - 2, py - 2, 604, 384), 0.04f, 8, Pal.Yellow);
-        Raylib.DrawRectangleRounded(new Rectangle(px, py, 600, 380), 0.04f, 8, new Color(24, 24, 30, 255));
+        int px = W / 2 - 300, py = H / 2 - 220;
+        Raylib.DrawRectangleRounded(new Rectangle(px - 2, py - 2, 604, 456), 0.04f, 8, Pal.Yellow);
+        Raylib.DrawRectangleRounded(new Rectangle(px, py, 600, 452), 0.04f, 8, new Color(24, 24, 30, 255));
         Txt("OBCHOD SE ZBRANEMI", px + 24, py + 18, 30, Pal.Yellow);
         Txt($"Penize: ${money}", px + 24, py + 56, 22, new Color(120, 230, 120, 255));
 
@@ -1820,6 +2388,16 @@ public class Game
             Txt($"{dmg}  {1f / w.Cooldown:0.#}/s", (int)r.X + 230, (int)r.Y + 14, 16, Pal.Gray);
             Txt(status, (int)r.X + 410, (int)r.Y + 10, 22, c);
         }
-        Txt("Klik nebo cisla 1-5 = koupit / vybrat.   B / ESC = zavrit", px + 24, py + 345, 18, Pal.Gray);
+
+        // radek brneni
+        int aidx = Weapons.All.Length;
+        var ar = ShopRow(aidx);
+        if (Raylib.CheckCollisionPointRec(mp, ar)) Raylib.DrawRectangleRounded(ar, 0.25f, 6, Raylib.Fade(Pal.White, 0.10f));
+        Color ac = money >= ArmorPrice ? new Color(120, 170, 240, 255) : new Color(150, 150, 155, 255);
+        Txt($"{aidx + 1}.  Brneni (+50)", (int)ar.X + 12, (int)ar.Y + 8, 26, ac);
+        Txt($"aktualne {(int)pArmor}/100", (int)ar.X + 230, (int)ar.Y + 14, 16, Pal.Gray);
+        Txt($"${ArmorPrice}", (int)ar.X + 410, (int)ar.Y + 10, 22, ac);
+
+        Txt("Klik nebo cisla 1-7 = koupit / vybrat.   B / ESC = zavrit", px + 24, py + 418, 18, Pal.Gray);
     }
 }

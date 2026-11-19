@@ -5,6 +5,7 @@ const int Width = 1280, Height = 720;
 
 Raylib.InitWindow(Width, Height, "Z04 - Chaos City");
 Raylib.SetTargetFPS(60);
+Sfx.Init();
 
 var game = new Game(Width, Height);
 
@@ -18,4 +19,5 @@ while (!Raylib.WindowShouldClose())
     Raylib.EndDrawing();
 }
 
+Sfx.Shutdown();
 Raylib.CloseWindow();

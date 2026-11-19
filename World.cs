@@ -6,7 +6,7 @@ namespace Z04;
 /// <summary>Mesto: mrizka silnic (Grid+1 x Grid+1), mezi nimi bloky s budovami nebo parkem.</summary>
 public class World
 {
-    public const int Grid = 8;
+    public const int Grid = 12;
     public const float Cell = 500f;
     public const float Road = 140f;
     public const float Size = Grid * Cell + Road;
@@ -14,15 +14,20 @@ public class World
     public readonly List<Rectangle> Buildings = new();
     public readonly List<Color> BuildingColors = new();
     public readonly List<Rectangle> Parks = new();
+    // rozsvicena okna v noci: pro kazdou budovu seznam oken (lokalni pozice v ramci budovy)
+    public readonly List<List<Rectangle>> Windows = new();
 
-    // specialni budovy: lakovna a banka (dvere na silnici = misto, kam se zajede)
-    public Rectangle Garage, Bank;
-    public Vector2 GarageDoor, BankDoor;
-    public const int GarageI = 1, GarageJ = 6, BankI = 6, BankJ = 2;
+    // specialni budovy: lakovna, banka, nemocnice, uhyt (dvere na silnici = misto, kam se zajede/dojde)
+    public Rectangle Garage, Bank, Hospital, Safehouse;
+    public Vector2 GarageDoor, BankDoor, HospitalDoor, SafehouseDoor;
+    public const int GarageI = 1, GarageJ = 6, BankI = 6, BankJ = 2,
+                     HospI = 9, HospJ = 9, SafeI = 3, SafeJ = 10;
 
     // dekorace strech (nemeni kolize)
     readonly List<List<(Rectangle R, int Kind)>> _roofDetails = new();
     readonly Random _deco;
+
+    public float Night;   // 0 = den, 1 = plna noc (nastavuje Game kazdy snimek)
 
     public World(int seed)
     {
@@ -66,6 +71,8 @@ public class World
 
         Garage = MakeSpecial(r, GarageI, GarageJ, new Color(200, 70, 150, 255), out GarageDoor);
         Bank = MakeSpecial(r, BankI, BankJ, new Color(196, 160, 60, 255), out BankDoor);
+        Hospital = MakeSpecial(r, HospI, HospJ, new Color(210, 70, 70, 255), out HospitalDoor);
+        Safehouse = MakeSpecial(r, SafeI, SafeJ, new Color(70, 150, 90, 255), out SafehouseDoor);
     }
 
     /// <summary>Nahradi obsah bloku jednou velkou budovou, dvere jsou na silnici nad ni.</summary>
@@ -80,7 +87,7 @@ public class World
             var b = Buildings[k];
             if (b.X >= bx && b.X < bx + bs && b.Y >= by && b.Y < by + bs)
             {
-                Buildings.RemoveAt(k); BuildingColors.RemoveAt(k); _roofDetails.RemoveAt(k);
+                Buildings.RemoveAt(k); BuildingColors.RemoveAt(k); _roofDetails.RemoveAt(k); Windows.RemoveAt(k);
             }
         }
         Parks.RemoveAll(pk => pk.X >= bx && pk.X < bx + bs && pk.Y >= by && pk.Y < by + bs);
@@ -110,6 +117,13 @@ public class World
             list.Add((new Rectangle(rx, ry, sw, sh), kind));
         }
         _roofDetails.Add(list);
+
+        // nahodna rozsvicena okna po obvodu strechy (sviti v noci)
+        var win = new List<Rectangle>();
+        for (float wx = x + 20; wx < x + w - 28; wx += 26)
+            for (float wy = y + 20; wy < y + h - 28; wy += 30)
+                if (_deco.NextDouble() < 0.35) win.Add(new Rectangle(wx, wy, 10, 12));
+        Windows.Add(win);
     }
 
     public static Vector2 Node(int i, int j) => new(i * Cell + Road / 2, j * Cell + Road / 2);
@@ -298,10 +312,20 @@ public class World
             }
 
             Raylib.DrawRectangleLinesEx(b, 3, Raylib.Fade(Pal.Black, 0.45f));
+
+            // rozsvicena okna v noci
+            if (Night > 0.05f)
+            {
+                var glow = new Color(255, 224, 140, 255);
+                foreach (var wr in Windows[i])
+                    Raylib.DrawRectangleRec(wr, Raylib.Fade(glow, Night * 0.9f));
+            }
         }
 
         DrawSpecial(Garage, "LAKOVNA", new Color(255, 120, 190, 255), x0, y0, x1, y1);
         DrawSpecial(Bank, "BANKA", new Color(250, 215, 80, 255), x0, y0, x1, y1);
+        DrawSpecial(Hospital, "NEMOCNICE", new Color(250, 120, 120, 255), x0, y0, x1, y1);
+        DrawSpecial(Safehouse, "UKRYT", new Color(120, 220, 150, 255), x0, y0, x1, y1);
     }
 
     void DrawSpecial(Rectangle b, string label, Color accent, float x0, float y0, float x1, float y1)
