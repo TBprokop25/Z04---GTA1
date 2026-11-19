@@ -14,7 +14,7 @@ public partial class Game
     int savings;                    // ulozene penize v bance (bezpecne pri smrti)
     Color playerCol = new(210, 150, 40, 255);
 
-    class Station { public Vector2 Pos; public string Label = ""; public int Action; public Color Col; }
+    class Station { public Vector2 Pos; public string Label = ""; public int Action; public Color Col; public string Furn = ""; }
     readonly List<Station> stations = new();
 
     const float IW = 1040, IH = 600;           // rozmer mistnosti
@@ -62,25 +62,25 @@ public partial class Game
         switch (p)
         {
             case Place.Bank:
-                stations.Add(new Station { Pos = new(IW / 2, 150), Label = "SEJF - podrz [E] a vykradni", Action = -1, Col = new Color(210, 180, 70, 255) });
-                stations.Add(new Station { Pos = new(IW * 0.22f, 250), Label = "PREPAZKA - [E] vlozit penize", Action = 1, Col = steel });
-                stations.Add(new Station { Pos = new(IW * 0.78f, 250), Label = "BANKOMAT - [E] vybrat penize", Action = 2, Col = steel });
+                stations.Add(new Station { Pos = new(IW / 2, 150), Label = "SEJF - podrz [E] a vykradni", Action = -1, Col = new Color(210, 180, 70, 255), Furn = "vault_door" });
+                stations.Add(new Station { Pos = new(IW * 0.22f, 250), Label = "PREPAZKA - [E] vlozit penize", Action = 1, Col = steel, Furn = "teller_counter" });
+                stations.Add(new Station { Pos = new(IW * 0.78f, 250), Label = "BANKOMAT - [E] vybrat penize", Action = 2, Col = steel, Furn = "atm" });
                 break;
             case Place.Hospital:
-                stations.Add(new Station { Pos = new(IW / 2, 160), Label = $"LUZKO - [E] plne vyleceni (${HospitalFee})", Action = 3, Col = new Color(230, 235, 240, 255) });
-                stations.Add(new Station { Pos = new(IW * 0.76f, 260), Label = "DAROVAT KREV - [E] +$150 za -25 HP", Action = 4, Col = new Color(200, 80, 80, 255) });
+                stations.Add(new Station { Pos = new(IW / 2, 160), Label = $"LUZKO - [E] plne vyleceni (${HospitalFee})", Action = 3, Col = new Color(230, 235, 240, 255), Furn = "hospital_bed" });
+                stations.Add(new Station { Pos = new(IW * 0.76f, 270), Label = "DAROVAT KREV - [E] +$150 za -25 HP", Action = 4, Col = new Color(200, 80, 80, 255), Furn = "blood_chair" });
                 break;
             case Place.Safehouse:
-                stations.Add(new Station { Pos = new(IW / 2, 160), Label = "POSTEL - [E] ulozit a smazat hvezdy", Action = 5, Col = new Color(90, 120, 170, 255) });
-                stations.Add(new Station { Pos = new(IW * 0.22f, 250), Label = "TREZOR - [E] ulozit penize", Action = 1, Col = steel });
-                stations.Add(new Station { Pos = new(IW * 0.78f, 250), Label = "SKRIN - [E] prevleknout", Action = 6, Col = wood });
+                stations.Add(new Station { Pos = new(IW / 2, 160), Label = "POSTEL - [E] ulozit a smazat hvezdy", Action = 5, Col = new Color(90, 120, 170, 255), Furn = "bed" });
+                stations.Add(new Station { Pos = new(IW * 0.22f, 260), Label = "TREZOR - [E] ulozit penize", Action = 1, Col = steel, Furn = "floor_safe" });
+                stations.Add(new Station { Pos = new(IW * 0.78f, 260), Label = "SKRIN - [E] prevleknout", Action = 6, Col = wood, Furn = "wardrobe" });
                 break;
             case Place.GunShop:
-                stations.Add(new Station { Pos = new(IW / 2, 170), Label = "PULT - [E] obchod se zbranemi", Action = 7, Col = wood });
+                stations.Add(new Station { Pos = new(IW / 2, 190), Label = "PULT - [E] obchod se zbranemi", Action = 7, Col = wood, Furn = "gun_counter" });
                 break;
             default: // Store
-                stations.Add(new Station { Pos = new(IW * 0.3f, 180), Label = "LEDNICE - [E] zdravi +40 ($60)", Action = 8, Col = new Color(90, 160, 200, 255) });
-                stations.Add(new Station { Pos = new(IW * 0.7f, 180), Label = "REGAL - [E] brneni +50 ($800)", Action = 9, Col = steel });
+                stations.Add(new Station { Pos = new(IW * 0.3f, 190), Label = "LEDNICE - [E] zdravi +40 ($60)", Action = 8, Col = new Color(90, 160, 200, 255), Furn = "fridge" });
+                stations.Add(new Station { Pos = new(IW * 0.7f, 190), Label = "REGAL - [E] brneni +50 ($800)", Action = 9, Col = steel, Furn = "shelf" });
                 break;
         }
     }
@@ -216,12 +216,30 @@ public partial class Game
             _ => new Color(70, 78, 82, 255),
         };
 
-        // podlaha + dlazdice
-        Raylib.DrawRectangle((int)ox, (int)oy, (int)IW, (int)IH, floor);
-        for (float x = 0; x < IW; x += 64)
-            Raylib.DrawLine((int)(ox + x), (int)oy, (int)(ox + x), (int)(oy + IH), Raylib.Fade(Pal.Black, 0.10f));
-        for (float y = 0; y < IH; y += 64)
-            Raylib.DrawLine((int)ox, (int)(oy + y), (int)(ox + IW), (int)(oy + y), Raylib.Fade(Pal.Black, 0.10f));
+        // podlaha - dlazdicove textury nebo plna barva + mrizka
+        string floorTex = place switch
+        {
+            Place.Bank => "04_interiery/podlahy/floor_bank.png",
+            Place.Hospital => "04_interiery/podlahy/floor_hospital.png",
+            Place.Safehouse => "04_interiery/podlahy/floor_safehouse.png",
+            Place.GunShop => "04_interiery/podlahy/floor_gunshop.png",
+            _ => "04_interiery/podlahy/floor_store.png",
+        };
+        if (Assets.Ready && Assets.Have(floorTex))
+        {
+            const float ts = 128f;   // 256px @2x
+            for (float x = 0; x < IW; x += ts)
+                for (float y = 0; y < IH; y += ts)
+                    Assets.DrawStretch(floorTex, new Rectangle(ox + x, oy + y, MathF.Min(ts, IW - x), MathF.Min(ts, IH - y)), Pal.White);
+        }
+        else
+        {
+            Raylib.DrawRectangle((int)ox, (int)oy, (int)IW, (int)IH, floor);
+            for (float x = 0; x < IW; x += 64)
+                Raylib.DrawLine((int)(ox + x), (int)oy, (int)(ox + x), (int)(oy + IH), Raylib.Fade(Pal.Black, 0.10f));
+            for (float y = 0; y < IH; y += 64)
+                Raylib.DrawLine((int)ox, (int)(oy + y), (int)(ox + IW), (int)(oy + y), Raylib.Fade(Pal.Black, 0.10f));
+        }
 
         // steny
         var wall = new Color(40, 40, 48, 255);
@@ -233,7 +251,10 @@ public partial class Game
 
         // dvere dole uprostred
         var door = IScreen(new Vector2(IW / 2, IH));
-        Raylib.DrawRectangle((int)door.X - 60, (int)door.Y - 6, 120, 20, new Color(150, 110, 60, 255));
+        if (Assets.Ready && Assets.Have("04_interiery/zdi_a_dvere/door_mat.png"))
+            Assets.DrawCentered("04_interiery/zdi_a_dvere/door_mat.png", door + new Vector2(0, 2), 0, 0.5f, Pal.White);
+        else
+            Raylib.DrawRectangle((int)door.X - 60, (int)door.Y - 6, 120, 20, new Color(150, 110, 60, 255));
         Txt("VYCHOD [E]", (int)door.X - 52, (int)door.Y - 4, 16, Pal.White);
 
         // stanice (nabytek) + popisek a zvyrazneni kdyz jsi blizko
@@ -241,10 +262,18 @@ public partial class Game
         {
             var sp = IScreen(s.Pos);
             bool near = Vector2.Distance(ipPos, s.Pos) < 80;
-            Raylib.DrawRectangle((int)sp.X - 44, (int)sp.Y - 28 + 6, 88, 56, Raylib.Fade(Pal.Black, 0.3f));
-            Raylib.DrawRectangleRounded(new Rectangle(sp.X - 44, sp.Y - 28, 88, 56), 0.2f, 6, s.Col);
-            Raylib.DrawRectangleLinesEx(new Rectangle(sp.X - 44, sp.Y - 28, 88, 56), 2, Raylib.Fade(Pal.Black, 0.5f));
-            DrawStationIcon(s, sp);
+            string furnTex = s.Furn.Length > 0 ? $"04_interiery/nabytek/{s.Furn}.png" : "";
+            if (Assets.Ready && furnTex.Length > 0 && Assets.Have(furnTex))
+            {
+                Assets.DrawCentered(furnTex, sp, 0, 0.5f, Pal.White);
+            }
+            else
+            {
+                Raylib.DrawRectangle((int)sp.X - 44, (int)sp.Y - 28 + 6, 88, 56, Raylib.Fade(Pal.Black, 0.3f));
+                Raylib.DrawRectangleRounded(new Rectangle(sp.X - 44, sp.Y - 28, 88, 56), 0.2f, 6, s.Col);
+                Raylib.DrawRectangleLinesEx(new Rectangle(sp.X - 44, sp.Y - 28, 88, 56), 2, Raylib.Fade(Pal.Black, 0.5f));
+                DrawStationIcon(s, sp);
+            }
 
             if (near)
             {

@@ -165,6 +165,7 @@ public class Person
     public float Angle, WalkT, FireT, FleeT, DeadT;
     public float AnimWalk, Phase;       // animacni faze chuze (kracejici nohy/ruce)
     public float DeathAng;              // smer, kam postava padla
+    public string CivDir = "02_postavy/civilista_a/civ_a";  // varianta spritu civilisty
     public bool Moving, Dead, HitByPlayer;
     public Vector2 FleeFrom;
 

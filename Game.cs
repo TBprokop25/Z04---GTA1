@@ -55,6 +55,7 @@ public partial class Game
     readonly List<Muzzle> muzzles = new();
     readonly List<Mark> tireMarks = new();
     float pWalk;   // akumulovana faze chuze hrace (pro animaci nohou)
+    bool pWalkMoving;
     Vector2 spray => world.GarageDoor;
     const int SprayPrice = 300;
     float sprayCd, sprayT;
@@ -203,7 +204,9 @@ public partial class Game
                 _ => new Color((byte)rnd.Next(70, 230), (byte)rnd.Next(70, 230), (byte)rnd.Next(70, 230), (byte)255),
             };
             float ph = Rnd(0, 2 * MathF.PI);
-            people.Add(new Person(kind, pos, col) { Angle = ph, Phase = ph, AnimWalk = ph });
+            var person = new Person(kind, pos, col) { Angle = ph, Phase = ph, AnimWalk = ph };
+            person.CivDir = CivDirs[rnd.Next(CivDirs.Length)];
+            people.Add(person);
             return;
         }
     }
@@ -338,6 +341,7 @@ public partial class Game
         float spd = Raylib.IsKeyDown(Keys.Shift) ? 220f : 150f;
         pPos += mv * spd * dt;
         pWalk += mv.Length() * spd * dt * 0.09f;   // animace nohou podle ujete vzdalenosti
+        pWalkMoving = mv != Vector2.Zero;
         world.Resolve(ref pPos, 9);
 
         // mireni a strelba
@@ -1549,6 +1553,12 @@ public partial class Game
             float bob = 1f + MathF.Sin(animT * 6f + k.Pos.X) * 0.1f;
             int kx = (int)k.Pos.X, ky = (int)k.Pos.Y;
             Raylib.DrawCircleV(k.Pos + new Vector2(2, 3), 11 * bob, Raylib.Fade(Pal.Black, 0.3f));
+
+            string picIcon = k.Kind == 0 ? "05_ikony/pickupy/p_health.png"
+                           : k.Kind == 2 ? "05_ikony/pickupy/p_armor.png"
+                           : "05_ikony/pickupy/p_money.png";
+            if (Assets.Ready && Assets.Have(picIcon)) { Assets.DrawCentered(picIcon, k.Pos, 0, 0.38f * bob, Pal.White); continue; }
+
             if (k.Kind == 0)
             {
                 Raylib.DrawCircleV(k.Pos, 11 * bob, Pal.White);
@@ -1572,7 +1582,11 @@ public partial class Game
         foreach (var p in people)
             if (!p.Dead && InView(p.Pos)) DrawPerson(p);
 
-        if (car == null && deadT <= 0)
+        if (car == null && deadT <= 0 && Assets.Ready && DrawPlayerSprite())
+        {
+            // hrac vykreslen pres sprite
+        }
+        else if (car == null && deadT <= 0)
         {
             var fwd = DirOf(pAngle);
             var side = new Vector2(-fwd.Y, fwd.X);
@@ -1681,6 +1695,8 @@ public partial class Game
 
     void DrawVehicle(Vehicle v)
     {
+        if (Assets.Ready && DrawVehicleSprite(v)) return;
+
         float deg = v.Angle * RadToDeg;
         var fwd = v.Forward;
         var right = new Vector2(-fwd.Y, fwd.X);
@@ -1836,6 +1852,8 @@ public partial class Game
 
     void DrawPerson(Person p)
     {
+        if (Assets.Ready && DrawPersonSprite(p)) return;
+
         var fwd = DirOf(p.Angle);
         var side = new Vector2(-fwd.Y, fwd.X);
         bool armed = p.Kind != PKind.Civil;
@@ -1954,11 +1972,21 @@ public partial class Game
 
         int stars = Stars;
         bool blink = ((int)(animT * 4)) % 2 == 0;
+        bool starTex = Assets.Ready && Assets.Have("05_ikony/hledanost/star_on.png");
         for (int i = 0; i < 5; i++)
         {
-            Color c = i < stars ? (blink ? Pal.Yellow : new Color(255, 160, 30, 255)) : new Color(50, 50, 55, 255);
-            Raylib.DrawCircle(34 + i * 28, 78, 10, c);
-            Raylib.DrawCircleLines(34 + i * 28, 78, 10, Pal.Black);
+            bool on = i < stars;
+            if (starTex)
+            {
+                string sp = on ? "05_ikony/hledanost/star_on.png" : "05_ikony/hledanost/star_off.png";
+                Assets.DrawCentered(sp, new Vector2(34 + i * 28, 78), 0, 24f / 64f, on && blink ? Pal.White : Raylib.Fade(Pal.White, on ? 0.9f : 0.6f));
+            }
+            else
+            {
+                Color c = on ? (blink ? Pal.Yellow : new Color(255, 160, 30, 255)) : new Color(50, 50, 55, 255);
+                Raylib.DrawCircle(34 + i * 28, 78, 10, c);
+                Raylib.DrawCircleLines(34 + i * 28, 78, 10, Pal.Black);
+            }
         }
 
         if (combo > 1)
@@ -1996,10 +2024,21 @@ public partial class Game
                   : Weapons.All[weaponIdx].Name + (onFootHolstered ? "  (schovano - F)" : "");
         Panel(new Rectangle(12, H - 100, 340, 62), panelCol);
         Txt(wn, 24, H - 94, 26, onFootHolstered ? Pal.Gray : Pal.White);
+        bool wIcons = Assets.Ready && Assets.Have(WeaponIconPath(0));
         for (int i = 0; i < Weapons.All.Length; i++)
         {
-            Color c = i == weaponIdx ? Pal.Yellow : owned[i] ? new Color(170, 170, 176, 255) : new Color(60, 60, 66, 255);
-            Raylib.DrawRectangleRounded(new Rectangle(24 + i * 38, H - 60, 32, 10), 0.5f, 4, c);
+            if (wIcons)
+            {
+                var slot = new Vector2(38 + i * 40, H - 52);
+                if (i == weaponIdx) Raylib.DrawRectangleRounded(new Rectangle(slot.X - 17, slot.Y - 15, 34, 30), 0.3f, 4, Raylib.Fade(Pal.Yellow, 0.25f));
+                Color tint = owned[i] ? Pal.White : Raylib.Fade(Pal.White, 0.28f);
+                Assets.DrawCentered(WeaponIconPath(i), slot, 0, 28f / 64f, tint);
+            }
+            else
+            {
+                Color c = i == weaponIdx ? Pal.Yellow : owned[i] ? new Color(170, 170, 176, 255) : new Color(60, 60, 66, 255);
+                Raylib.DrawRectangleRounded(new Rectangle(24 + i * 38, H - 60, 32, 10), 0.5f, 4, c);
+            }
         }
 
         // quest
@@ -2110,15 +2149,27 @@ public partial class Game
 
     void DrawMenu()
     {
-        Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(Pal.Black, scr == Scr.Menu ? 0.45f : 0.6f));
+        bool menuBg = scr == Scr.Menu && Assets.Ready && Assets.Have("06_ui/logo_a_pozadi/menu_background.png");
+        if (menuBg) Assets.DrawStretch("06_ui/logo_a_pozadi/menu_background.png", new Rectangle(0, 0, W, H), Pal.White);
+        Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(Pal.Black, scr == Scr.Menu ? (menuBg ? 0.28f : 0.45f) : 0.6f));
         if (scr == Scr.Help) { DrawHelp(); return; }
 
         string title = scr == Scr.Menu ? "CHAOS CITY" : "PAUZA";
         int size = scr == Scr.Menu ? 104 : 72;
         int ty = scr == Scr.Menu ? 120 : 130;
-        int tw = Raylib.MeasureText(title, size);
-        Raylib.DrawText(title, W / 2 - tw / 2 + 5, ty + 5, size, Raylib.Fade(Pal.Black, 0.8f));
-        Raylib.DrawText(title, W / 2 - tw / 2, ty, size, scr == Scr.Menu ? Pal.Yellow : Pal.White);
+        var logo = scr == Scr.Menu ? Assets.Get("06_ui/logo_a_pozadi/logo.png") : default;
+        if (logo.Id != 0)
+        {
+            float lh = 180, lw = logo.Width * (lh / logo.Height);
+            Raylib.DrawTexturePro(logo, new Rectangle(0, 0, logo.Width, logo.Height),
+                new Rectangle(W / 2f, ty + 60, lw, lh), new Vector2(lw / 2, lh / 2), 0, Pal.White);
+        }
+        else
+        {
+            int tw = Raylib.MeasureText(title, size);
+            Raylib.DrawText(title, W / 2 - tw / 2 + 5, ty + 5, size, Raylib.Fade(Pal.Black, 0.8f));
+            Raylib.DrawText(title, W / 2 - tw / 2, ty, size, scr == Scr.Menu ? Pal.Yellow : Pal.White);
+        }
 
         string sub = scr == Scr.Menu
             ? "kradni, znic, vydelej - a utec policii"
