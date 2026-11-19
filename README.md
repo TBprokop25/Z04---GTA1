@@ -15,13 +15,14 @@ Top-down 2D hra inspirovana GTA 1. Kradni auta, znic mesto, vydelavej na chaosu 
 | B | obchod (zbrane 1-6, brneni 7) |
 | N | novy sidequest |
 | M | velka mapa |
-| E u banky | vykrast banku |
-| E u nemocnice | plne vyleceni ($200) |
-| E u ukrytu | smazat hvezdy + ulozit hru |
-| P / ESC | pauza |
+| E u dveri | vstoupit do budovy |
+| E uvnitr | pouzit stanici / odejit (dvere dole) |
+| P / ESC | pauza (venku) / odejit z budovy |
 
 ## Co je noveho
-- **Vetsi mesto** (12x12 bloku) a ctyri sluzby: lakovna, banka, nemocnice, ukryt.
+- **Vstup do budov** klavesou **E**: banka (sejf + ucet), nemocnice (luzko, darovani krve), ukryt (ulozeni, trezor, prevleknuti), zbrojnice (obchod), vecerka (zdravi/brneni). Uvnitr chodis a pouzivas stanice klavesou E.
+- **Bankovni ucet**: ulozene penize jsou v bezpeci i po smrti (v nemocnici ztratis 20 % jen z hotovosti).
+- **Vetsi mesto** (12x12 bloku) a sest budov se sluzbami: lakovna, banka, nemocnice, ukryt, zbrojnice, vecerka.
 - **Cyklus den/noc** - v noci sviti pouliclni lampy, okna budov a reflektory aut.
 - **Vice vozidel**: sedan, dodavka, autobus, motorka, sanitka (ruzna velikost i rychlost).
 - **Zbrane + brneni**: granat, brneni (pohlcuje poskozeni, kupuje se v obchodu nebo padi z policie).

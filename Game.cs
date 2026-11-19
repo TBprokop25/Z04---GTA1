@@ -3,7 +3,7 @@ using Raylib_cs;
 
 namespace Z04;
 
-public class Game
+public partial class Game
 {
     const float RadToDeg = 180f / MathF.PI;
     static readonly Vector2[] Dirs = { new(1, 0), new(0, 1), new(-1, 0), new(0, -1) };
@@ -76,7 +76,7 @@ public class Game
     float Night => Math.Clamp((MathF.Cos(dayTime * MathF.Tau) + 0.35f) / 1.1f, 0f, 1f);
 
     // UI: obrazovky
-    enum Scr { Menu, Play, Pause, Help }
+    enum Scr { Menu, Play, Pause, Help, Interior }
     Scr scr = Scr.Menu, helpBack = Scr.Menu;
     int sel;
     public bool Quit, WantRestart;
@@ -109,6 +109,7 @@ public class Game
             var parts = File.ReadAllText(SavePath).Split(';');
             if (parts.Length >= 1 && int.TryParse(parts[0], out int bc)) bestChaos = bc;
             if (parts.Length >= 2 && int.TryParse(parts[1], out int mn)) money = mn;
+            if (parts.Length >= 3 && int.TryParse(parts[2], out int sv)) savings = sv;
         }
         catch { /* poskozeny save ignorujeme */ }
     }
@@ -118,7 +119,7 @@ public class Game
         try
         {
             bestChaos = Math.Max(bestChaos, totalChaos);
-            File.WriteAllText(SavePath, $"{bestChaos};{money}");
+            File.WriteAllText(SavePath, $"{bestChaos};{money};{savings}");
         }
         catch { }
     }
@@ -217,6 +218,7 @@ public class Game
         bool driving = scr == Scr.Play && !mapOpen && !shop && car != null && car.State == VState.Alive;
         Sfx.Engine(driving, driving ? MathF.Abs(car!.Speed) / car.MaxSpeed : 0f);
 
+        if (scr == Scr.Interior) { UpdateInterior(dt); return; }
         if (scr != Scr.Play) { UpdateMenu(); return; }
         if (mapOpen)
         {
@@ -303,9 +305,11 @@ public class Game
         if (Raylib.IsKeyPressed(Keys.E))
         {
             if (car != null) ExitCar();
-            else if (CanRobBank()) StartRobbery();
-            else if (NearDoor(world.HospitalDoor)) UseHospital();
-            else if (NearDoor(world.SafehouseDoor)) UseSafehouse();
+            else if (NearDoor(world.BankDoor)) EnterPlace(Place.Bank, world.BankDoor);
+            else if (NearDoor(world.HospitalDoor)) EnterPlace(Place.Hospital, world.HospitalDoor);
+            else if (NearDoor(world.SafehouseDoor)) EnterPlace(Place.Safehouse, world.SafehouseDoor);
+            else if (NearDoor(world.GunShopDoor)) EnterPlace(Place.GunShop, world.GunShopDoor);
+            else if (NearDoor(world.StoreDoor)) EnterPlace(Place.Store, world.StoreDoor);
             else TryEnterCar();
         }
         if (car != null) return;   // v aute se rizeni resi v UpdateVehicles
@@ -1353,64 +1357,10 @@ public class Game
 
     bool NearDoor(Vector2 door) => car == null && deadT <= 0 && Vector2.Distance(pPos, door) < 90;
 
-    void UseHospital()
-    {
-        if (pHp >= 100) { Say("Jsi plne zdravy."); return; }
-        if (money < HospitalFee) { Say($"Nemocnice stoji ${HospitalFee}."); return; }
-        money -= HospitalFee;
-        pHp = 100;
-        popups.Add(new Popup { Pos = pPos, Text = "+PLNE ZDRAVI", Life = 1.4f });
-        Say($"Nemocnice te vylecila za ${HospitalFee}.");
-    }
-
-    void UseSafehouse()
-    {
-        heat = 0; combo = 0;
-        SaveGame();
-        popups.Add(new Popup { Pos = pPos, Text = "ULOZENO", Life = 1.6f });
-        Say($"Ukryt: hvezdicky smazany, hra ulozena (rekord ${bestChaos}).");
-    }
-
-    bool CanRobBank() =>
-        !robbing && bankCd <= 0 && deadT <= 0 && Vector2.Distance(pPos, world.BankDoor) < 90;
-
-    void StartRobbery()
-    {
-        robbing = true;
-        robT = 0;
-        heat = MathF.Max(heat, 100f);
-        AlertCivilians(world.BankDoor, 500, 6f);
-        Say($"Vykradas banku! Zustan u dveri {RobTime:0}s.");
-    }
-
+    // Samotne vykradeni banky probiha uvnitr u sejfu (viz Interior.cs); tady jen bezi cooldown.
     void UpdateBank(float dt)
     {
         if (bankCd > 0) bankCd -= dt;
-        if (!robbing) return;
-
-        float d = Vector2.Distance(pPos, world.BankDoor);
-        if (deadT > 0 || car != null || d > 130)
-        {
-            robbing = false;
-            bankCd = 15f;
-            Say("Loupez se nezdaril!");
-            return;
-        }
-
-        heat = MathF.Max(heat, 100f);    // alarm drzi 3 hvezdy
-        robT += dt;
-        if (robT >= RobTime)
-        {
-            robbing = false;
-            bankCd = 120f;
-            int loot = rnd.Next(4000, 6001);
-            money += loot; totalChaos += loot;
-            popups.Add(new Popup { Pos = pPos, Text = $"BANKA +${loot}", Life = 2.5f });
-            Say($"Banka vykradena! +${loot} - utikej!");
-            Sfx.Play(Snd.Bank);
-            SaveGame();
-            heat = MathF.Max(heat, 110f);
-        }
     }
 
     // ---------- efekty, kamera
@@ -1514,6 +1464,8 @@ public class Game
 
     public void Draw()
     {
+        if (scr == Scr.Interior) { DrawInterior(); return; }
+
         Raylib.ClearBackground(Pal.Grass);
         Raylib.BeginMode2D(cam);
 
@@ -1625,7 +1577,7 @@ public class Game
             var fwd = DirOf(pAngle);
             var side = new Vector2(-fwd.Y, fwd.X);
             float swing = MathF.Sin(pWalk) * 3.6f;
-            var jacket = new Color(210, 150, 40, 255);
+            var jacket = playerCol;
             var skin = new Color(238, 198, 158, 255);
 
             Raylib.DrawCircleV(pPos + new Vector2(2, 3), 9f, Raylib.Fade(Pal.Black, 0.32f));
@@ -2118,23 +2070,19 @@ public class Game
             Txt("LAKUJI A OPRAVUJI...", W / 2 - 160, 88, 18, new Color(255, 120, 190, 255));
             Bar(W / 2 - 160, 112, 320, 18, 1f - sprayT / 1.6f, new Color(255, 120, 190, 255));
         }
-        else if (car == null && deadT <= 0 && Vector2.Distance(pPos, world.BankDoor) < 90)
+        else
         {
-            string bt = bankCd > 0 ? $"Banka je zavrena ({(int)bankCd}s)" : "[E] VYKRAST BANKU";
-            int bw2 = Raylib.MeasureText(bt, 26);
-            Txt(bt, W / 2 - bw2 / 2, H - 140, 26, bankCd > 0 ? Pal.Gray : Pal.Yellow);
-        }
-        else if (NearDoor(world.HospitalDoor))
-        {
-            string ht = $"[E] NEMOCNICE - plne zdravi (${HospitalFee})";
-            int hw = Raylib.MeasureText(ht, 26);
-            Txt(ht, W / 2 - hw / 2, H - 140, 26, new Color(250, 120, 120, 255));
-        }
-        else if (NearDoor(world.SafehouseDoor))
-        {
-            string st = "[E] UKRYT - smazat hvezdy a ulozit";
-            int sw3 = Raylib.MeasureText(st, 26);
-            Txt(st, W / 2 - sw3 / 2, H - 140, 26, new Color(120, 220, 150, 255));
+            string? ent = NearDoor(world.BankDoor) ? "BANKA"
+                        : NearDoor(world.HospitalDoor) ? "NEMOCNICE"
+                        : NearDoor(world.SafehouseDoor) ? "UKRYT"
+                        : NearDoor(world.GunShopDoor) ? "ZBROJNICE"
+                        : NearDoor(world.StoreDoor) ? "VECERKA" : null;
+            if (ent != null)
+            {
+                string et = $"[E] VSTOUPIT: {ent}";
+                int ew = Raylib.MeasureText(et, 26);
+                Txt(et, W / 2 - ew / 2, H - 140, 26, Pal.Yellow);
+            }
         }
 
         // hlaska
@@ -2236,7 +2184,7 @@ public class Game
         Txt("Nic rychle za sebou = chaos combo az x5. Z vraku padaji lekarnicky, penize i brneni.", px + 28, py + 498, 17, Pal.White);
         Txt("Mesto zije v cyklu den/noc - v noci sviti lampy, okna a reflektory aut.", px + 28, py + 520, 17, Pal.White);
         Txt("Na 3+ hvezdach stavi policie zatarasy, na 5 hvezdach prileti bojovy vrtulnik.", px + 28, py + 542, 17, Pal.White);
-        Txt("Jezdi i dodavky, autobusy, motorky a sanitky. Granat (zbran 6) lob na dalku.", px + 28, py + 564, 17, Pal.White);
+        Txt("Do budov (banka, nemocnice, ukryt, zbrojnice, vecerka) vejdes klavesou [E].", px + 28, py + 564, 17, Pal.White);
         Txt("Klikni nebo stiskni klavesu pro navrat", px + 28, py + 598, 16, Pal.Gray);
     }
 
@@ -2279,6 +2227,8 @@ public class Game
         Raylib.DrawCircle(mx + (int)(world.BankDoor.X * s), my + (int)(world.BankDoor.Y * s), 4, new Color(240, 200, 60, 255));
         Raylib.DrawCircle(mx + (int)(world.HospitalDoor.X * s), my + (int)(world.HospitalDoor.Y * s), 4, new Color(250, 110, 110, 255));
         Raylib.DrawCircle(mx + (int)(world.SafehouseDoor.X * s), my + (int)(world.SafehouseDoor.Y * s), 4, new Color(110, 220, 150, 255));
+        Raylib.DrawCircle(mx + (int)(world.GunShopDoor.X * s), my + (int)(world.GunShopDoor.Y * s), 4, new Color(255, 170, 80, 255));
+        Raylib.DrawCircle(mx + (int)(world.StoreDoor.X * s), my + (int)(world.StoreDoor.Y * s), 4, new Color(120, 220, 230, 255));
         float pa = (car != null ? car.Angle : pAngle) * RadToDeg;
         Raylib.DrawPoly(new Vector2(mx + pPos.X * s, my + pPos.Y * s), 3, 6, pa, Pal.White);
         Txt("M = velka mapa", mx, my - 20, 14, Pal.White);
@@ -2306,10 +2256,14 @@ public class Game
                 R(new Rectangle(i * World.Cell + World.Road, j * World.Cell + World.Road, bs + 3, bs + 3), new Color(96, 96, 94, 255));
         foreach (var pk in world.Parks) R(pk, Pal.Park);
         foreach (var b in world.Buildings) R(b, new Color(128, 128, 134, 255));
+        var gorange = new Color(255, 170, 80, 255);
+        var scyan = new Color(120, 220, 230, 255);
         R(world.Bank, gold);
         R(world.Garage, pink);
         R(world.Hospital, hred);
         R(world.Safehouse, sgreen);
+        R(world.GunShop, gorange);
+        R(world.Store, scyan);
 
         // souradnice ulic
         for (int k = 0; k <= World.Grid; k++)
@@ -2354,6 +2308,7 @@ public class Game
         {
             ("Ty", Pal.White), ("Banka (E = vykrast)", gold), ("Lakovna (zajed autem)", pink),
             ("Nemocnice (E = lecba)", hred), ("Ukryt (E = ulozit)", sgreen),
+            ("Zbrojnice (E = obchod)", gorange), ("Vecerka (E = zdravi/brneni)", scyan),
             ("Cil questu", Pal.Yellow), ("Policie", Pal.Blue), ("Armada / vrtulnik", Pal.Red),
         };
         for (int i = 0; i < legend.Length; i++)
