@@ -2,7 +2,7 @@ using Raylib_cs;
 
 namespace Z04;
 
-public enum Snd { Shot, Smg, Shotgun, Explosion, Pickup, Coin, Hurt, Siren, Nitro, Quest, Bank, Click, Engine }
+public enum Snd { Shot, Smg, Shotgun, Explosion, Pickup, Coin, Hurt, Siren, Nitro, Quest, Bank, Click, Engine, Reload, Rain, Thunder }
 
 /// <summary>
 /// Procedurálně generované zvuky - nepotřebují žádné externí soubory.
@@ -15,7 +15,7 @@ public static class Sfx
     static bool _ready;
     static float _vol = 0.6f;
     static readonly Dictionary<Snd, Sound> _snd = new();
-    static bool _enginePlaying;
+    static bool _enginePlaying, _rainPlaying;
 
     public static void Init()
     {
@@ -40,6 +40,9 @@ public static class Sfx
             Add(dir, Snd.Bank, Arp(new[] { 1046f, 880f, 660f, 1320f }, 0.11f, 0.45f));
             Add(dir, Snd.Click, Tone(880, 0.04f, 0.3f, 0));
             Add(dir, Snd.Engine, Engine());
+            Add(dir, Snd.Reload, Reload());
+            Add(dir, Snd.Rain, RainLoop());
+            Add(dir, Snd.Thunder, Thunder());
 
             _ready = true;
         }
@@ -76,6 +79,23 @@ public static class Sfx
         {
             Raylib.StopSound(s);
             _enginePlaying = false;
+        }
+    }
+
+    /// <summary>Smyčka deste - hlasitost 0..1, pri 0 se zastavi.</summary>
+    public static void Rain(float vol)
+    {
+        if (!_ready || !_snd.TryGetValue(Snd.Rain, out var s)) return;
+        if (vol > 0.02f)
+        {
+            Raylib.SetSoundVolume(s, _vol * vol);
+            if (!Raylib.IsSoundPlaying(s)) Raylib.PlaySound(s);
+            _rainPlaying = true;
+        }
+        else if (_rainPlaying)
+        {
+            Raylib.StopSound(s);
+            _rainPlaying = false;
         }
     }
 
@@ -201,6 +221,63 @@ public static class Sfx
                     + MathF.Sin(ph * 180f * MathF.Tau) * 0.3f
                     + (float)(R.NextDouble() * 2 - 1) * 0.1f;
             s[i] = (short)(v * 0.6f * 32000);
+        }
+        return s;
+    }
+
+    static short Clip(float v) => (short)Math.Clamp(v * 32000f, -32000f, 32000f);
+
+    /// <summary>Cvaknuti zasobniku (dvojity klik).</summary>
+    static short[] Reload()
+    {
+        int n = (int)(Rate * 0.26f);
+        var s = new short[n];
+        float[] clicks = { 0f, 0.15f };
+        float[] freqs = { 1900f, 1100f };
+        for (int i = 0; i < n; i++)
+        {
+            float t = i / (float)Rate, v = 0;
+            for (int k = 0; k < clicks.Length; k++)
+            {
+                float d = t - clicks[k];
+                if (d < 0 || d > 0.035f) continue;
+                float env = 1f - d / 0.035f;
+                v += ((float)(R.NextDouble() * 2 - 1) * 0.6f + MathF.Sin(d * freqs[k] * MathF.Tau) * 0.4f) * env;
+            }
+            s[i] = Clip(v * 0.5f);
+        }
+        return s;
+    }
+
+    /// <summary>Dest - filtrovany sum, delka je vybrana tak, aby smycka nebyla poznat.</summary>
+    static short[] RainLoop()
+    {
+        int n = (int)(Rate * 1.2f);
+        var s = new short[n];
+        float lp = 0;
+        for (int i = 0; i < n; i++)
+        {
+            float noise = (float)(R.NextDouble() * 2 - 1);
+            lp += (noise - lp) * 0.40f;
+            s[i] = Clip(lp * 0.55f);
+        }
+        return s;
+    }
+
+    /// <summary>Hrom - dlouhe dunive duneni s vlnenim.</summary>
+    static short[] Thunder()
+    {
+        int n = (int)(Rate * 1.9f);
+        var s = new short[n];
+        float lp = 0;
+        for (int i = 0; i < n; i++)
+        {
+            float t = i / (float)n;
+            float env = MathF.Pow(1f - t, 1.4f) * (0.65f + 0.35f * MathF.Sin(t * 22f));
+            float noise = (float)(R.NextDouble() * 2 - 1);
+            lp += (noise - lp) * 0.03f;
+            float rumble = MathF.Sin(i / (float)Rate * 42f * MathF.Tau);
+            s[i] = Clip((lp * 3.2f + rumble * 0.35f) * env * 0.8f);
         }
         return s;
     }

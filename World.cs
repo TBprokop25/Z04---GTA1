@@ -29,6 +29,7 @@ public class World
     readonly Random _deco;
 
     public float Night;   // 0 = den, 1 = plna noc (nastavuje Game kazdy snimek)
+    public float Wet;     // 0 = sucho, 1 = mokra vozovka (dest)
 
     public World(int seed)
     {
@@ -200,7 +201,15 @@ public class World
         var zebra = new Color(235, 235, 235, 200);
 
         // asfalt
-        Raylib.DrawRectangle(0, 0, (int)Size, (int)Size, Pal.Road);
+        var road = Pal.Road;
+        if (Wet > 0.01f)
+        {
+            // mokry asfalt je tmavsi a modrejsi
+            road = new Color((byte)(road.R + (34 - road.R) * 0.7f * Wet),
+                             (byte)(road.G + (40 - road.G) * 0.7f * Wet),
+                             (byte)(road.B + (54 - road.B) * 0.7f * Wet), (byte)255);
+        }
+        Raylib.DrawRectangle(0, 0, (int)Size, (int)Size, road);
 
         // chodniky (bloky) s obrubnikem
         for (int i = 0; i < Grid; i++)

@@ -15,6 +15,7 @@ public static class Keys
     public static readonly KeyboardKey B = (KeyboardKey)66;
     public static readonly KeyboardKey N = (KeyboardKey)78;
     public static readonly KeyboardKey Q = (KeyboardKey)81;
+    public static readonly KeyboardKey R = (KeyboardKey)82;
     public static readonly KeyboardKey M = (KeyboardKey)77;
     public static readonly KeyboardKey P = (KeyboardKey)80;
     public static readonly KeyboardKey Enter = (KeyboardKey)257;
@@ -69,19 +70,20 @@ public static class Pal
 }
 
 public record Weapon(string Name, int Price, float Cooldown, float Damage, int Pellets,
-                     float Spread, float Speed, float Range, bool Explosive);
+                     float Spread, float Speed, float Range, bool Explosive, int Mag, float ReloadTime);
 
 public static class Weapons
 {
-    // Name, Price, Cooldown, Damage, Pellets, Spread, Speed, Range, Explosive
+    // Name, Price, Cooldown, Damage, Pellets, Spread, Speed, Range, Explosive, Mag (zasobnik), ReloadTime (s)
+    // Zaloha naboju je neomezena - po vystrileni zasobniku se prebiji (R nebo automaticky).
     public static readonly Weapon[] All =
     {
-        new("Pistole",    0,     0.35f, 25, 1, 0.03f, 900,  650,  false),
-        new("SMG",        1500,  0.08f, 13, 1, 0.09f, 950,  600,  false),
-        new("Brokovnice", 3500,  0.80f, 14, 8, 0.28f, 800,  330,  false),
-        new("Minigun",    9000,  0.035f, 9, 1, 0.12f, 1000, 650,  false),
-        new("Granat",     2000,  1.00f, 0,  1, 0.02f, 430,  250,  true),
-        new("Raketomet",  15000, 1.10f, 0,  1, 0.01f, 650,  1400, true),
+        new("Pistole",    0,     0.35f, 25, 1, 0.03f, 900,  650,  false, 12,  1.1f),
+        new("SMG",        1500,  0.08f, 13, 1, 0.09f, 950,  600,  false, 30,  1.4f),
+        new("Brokovnice", 3500,  0.80f, 14, 8, 0.28f, 800,  330,  false, 6,   2.0f),
+        new("Minigun",    9000,  0.035f, 9, 1, 0.12f, 1000, 650,  false, 120, 3.2f),
+        new("Granat",     2000,  1.00f, 0,  1, 0.02f, 430,  250,  true,  3,   1.6f),
+        new("Raketomet",  15000, 1.10f, 0,  1, 0.01f, 650,  1400, true,  1,   2.2f),
     };
 }
 
@@ -101,7 +103,7 @@ public enum VKind { Civil, Police, Tank }
 public enum VModel { Sedan, Van, Bus, Bike, Ambulance }
 public enum VState { Alive, Burning, Wreck }
 public enum PKind { Civil, Cop, Soldier }
-public enum QType { DestroyCars, KillCops, Checkpoint, Survive }
+public enum QType { DestroyCars, KillCops, Checkpoint, Survive, Courier, StealCar, Assassinate, Rampage }
 
 public class Vehicle
 {
@@ -167,6 +169,7 @@ public class Person
     public float DeathAng;              // smer, kam postava padla
     public string CivDir = "02_postavy/civilista_a/civ_a";  // varianta spritu civilisty
     public bool Moving, Dead, HitByPlayer;
+    public bool Vip;                    // cil mise (zlata postava)
     public Vector2 FleeFrom;
 
     public Person(PKind kind, Vector2 pos, Color col)
@@ -220,5 +223,8 @@ public class Quest
     public QType Type;
     public float Prog, Time;
     public int Goal, Reward;
-    public Vector2 Target;
+    public int Stage;                 // faze mise (kuryr / kradez auta)
+    public Vector2 Target, Target2;   // cilove body
+    public Person? Vip;               // cil atentatu
+    public Vehicle? Car;              // auto ke kradezi
 }
