@@ -334,6 +334,8 @@ public partial class Game
             else if (NearDoor(world.SafehouseDoor)) EnterPlace(Place.Safehouse, world.SafehouseDoor);
             else if (NearDoor(world.GunShopDoor)) EnterPlace(Place.GunShop, world.GunShopDoor);
             else if (NearDoor(world.StoreDoor)) EnterPlace(Place.Store, world.StoreDoor);
+            else if (NearDoor(world.GasDoor)) EnterPlace(Place.Gas, world.GasDoor);
+            else if (NearDoor(world.VillaDoor)) EnterPlace(Place.Villa, world.VillaDoor);
             else TryEnterCar();
         }
         if (car != null) return;   // v aute se rizeni resi v UpdateVehicles
@@ -1545,6 +1547,8 @@ public partial class Game
     void UpdateBank(float dt)
     {
         if (bankCd > 0) bankCd -= dt;
+        if (villaCd > 0) villaCd -= dt;
+        if (gasCd > 0) gasCd -= dt;
     }
 
     // ---------- pocasi
@@ -2420,7 +2424,9 @@ public partial class Game
                         : NearDoor(world.HospitalDoor) ? "NEMOCNICE"
                         : NearDoor(world.SafehouseDoor) ? "UKRYT"
                         : NearDoor(world.GunShopDoor) ? "ZBROJNICE"
-                        : NearDoor(world.StoreDoor) ? "VECERKA" : null;
+                        : NearDoor(world.StoreDoor) ? "VECERKA"
+                        : NearDoor(world.GasDoor) ? "BENZINKA"
+                        : NearDoor(world.VillaDoor) ? "VILA" : null;
             if (ent != null)
             {
                 string et = $"[E] VSTOUPIT: {ent}";
@@ -2454,8 +2460,23 @@ public partial class Game
 
     void DrawMenu()
     {
-        bool menuBg = scr == Scr.Menu && Assets.Ready && Assets.Have("06_ui/logo_a_pozadi/menu_background.png");
-        if (menuBg) Assets.DrawStretch("06_ui/logo_a_pozadi/menu_background.png", new Rectangle(0, 0, W, H), Pal.White);
+        // pozadi menu: cela mapa mesta z noveho assetoveho baliku (fallback na puvodni pozadi)
+        string menuMap = "07_svet/mapa/chaoscity_map_4096.png";
+        bool haveMap = Assets.Ready && Assets.Have(menuMap);
+        bool menuBg = scr == Scr.Menu && (haveMap || Assets.Have("06_ui/logo_a_pozadi/menu_background.png"));
+        if (menuBg)
+        {
+            if (haveMap)
+            {
+                // pomalu se posouvajici vyrez mapy (parallax efekt)
+                var mt = Assets.Get(menuMap);
+                float pan = (MathF.Sin(animT * 0.08f) * 0.5f + 0.5f);
+                float vw = mt.Width * 0.72f, vh = vw * H / W;
+                float sx = (mt.Width - vw) * pan, sy = (mt.Height - vh) * (0.3f + 0.4f * pan);
+                Raylib.DrawTexturePro(mt, new Rectangle(sx, sy, vw, vh), new Rectangle(0, 0, W, H), Vector2.Zero, 0, Pal.White);
+            }
+            else Assets.DrawStretch("06_ui/logo_a_pozadi/menu_background.png", new Rectangle(0, 0, W, H), Pal.White);
+        }
         Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(Pal.Black, scr == Scr.Menu ? (menuBg ? 0.28f : 0.45f) : 0.6f));
         if (scr == Scr.Help) { DrawHelp(); return; }
 
@@ -2589,6 +2610,8 @@ public partial class Game
         Raylib.DrawCircle(mx + (int)(world.SafehouseDoor.X * s), my + (int)(world.SafehouseDoor.Y * s), 4, new Color(110, 220, 150, 255));
         Raylib.DrawCircle(mx + (int)(world.GunShopDoor.X * s), my + (int)(world.GunShopDoor.Y * s), 4, new Color(255, 170, 80, 255));
         Raylib.DrawCircle(mx + (int)(world.StoreDoor.X * s), my + (int)(world.StoreDoor.Y * s), 4, new Color(120, 220, 230, 255));
+        Raylib.DrawCircle(mx + (int)(world.GasDoor.X * s), my + (int)(world.GasDoor.Y * s), 4, new Color(255, 110, 110, 255));
+        Raylib.DrawCircle(mx + (int)(world.VillaDoor.X * s), my + (int)(world.VillaDoor.Y * s), 4, new Color(200, 160, 255, 255));
         float pa = (car != null ? car.Angle : pAngle) * RadToDeg;
         Raylib.DrawPoly(new Vector2(mx + pPos.X * s, my + pPos.Y * s), 3, 6, pa, Pal.White);
         Txt("M = velka mapa", mx, my - 20, 14, Pal.White);
@@ -2618,12 +2641,16 @@ public partial class Game
         foreach (var b in world.Buildings) R(b, new Color(128, 128, 134, 255));
         var gorange = new Color(255, 170, 80, 255);
         var scyan = new Color(120, 220, 230, 255);
+        var gasred = new Color(255, 110, 110, 255);
+        var vpurple = new Color(200, 160, 255, 255);
         R(world.Bank, gold);
         R(world.Garage, pink);
         R(world.Hospital, hred);
         R(world.Safehouse, sgreen);
         R(world.GunShop, gorange);
         R(world.Store, scyan);
+        R(world.Gas, gasred);
+        R(world.Villa, vpurple);
 
         // souradnice ulic
         for (int k = 0; k <= World.Grid; k++)
@@ -2670,6 +2697,7 @@ public partial class Game
             ("Ty", Pal.White), ("Banka (E = vykrast)", gold), ("Lakovna (zajed autem)", pink),
             ("Nemocnice (E = lecba)", hred), ("Ukryt (E = ulozit)", sgreen),
             ("Zbrojnice (E = obchod)", gorange), ("Vecerka (E = zdravi/brneni)", scyan),
+            ("Benzinka (E = zdravi/kasa)", gasred), ("Vila (E = loupez/relax)", vpurple),
             ("Cil questu", Pal.Yellow), ("Policie", Pal.Blue), ("Armada / vrtulnik", Pal.Red),
         };
         for (int i = 0; i < legend.Length; i++)

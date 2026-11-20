@@ -17,12 +17,13 @@ public class World
     // rozsvicena okna v noci: pro kazdou budovu seznam oken (lokalni pozice v ramci budovy)
     public readonly List<List<Rectangle>> Windows = new();
 
-    // specialni budovy: lakovna, banka, nemocnice, ukryt, zbrojnice, vecerka
-    public Rectangle Garage, Bank, Hospital, Safehouse, GunShop, Store;
-    public Vector2 GarageDoor, BankDoor, HospitalDoor, SafehouseDoor, GunShopDoor, StoreDoor;
+    // specialni budovy: lakovna, banka, nemocnice, ukryt, zbrojnice, vecerka, benzinka, vila
+    public Rectangle Garage, Bank, Hospital, Safehouse, GunShop, Store, Gas, Villa;
+    public Vector2 GarageDoor, BankDoor, HospitalDoor, SafehouseDoor, GunShopDoor, StoreDoor, GasDoor, VillaDoor;
     public const int GarageI = 1, GarageJ = 6, BankI = 6, BankJ = 2,
                      HospI = 9, HospJ = 9, SafeI = 3, SafeJ = 10,
-                     GunI = 10, GunJ = 4, StoreI = 4, StoreJ = 3;
+                     GunI = 10, GunJ = 4, StoreI = 4, StoreJ = 3,
+                     GasI = 8, GasJ = 7, VillaI = 10, VillaJ = 1;
 
     // dekorace strech (nemeni kolize)
     readonly List<List<(Rectangle R, int Kind)>> _roofDetails = new();
@@ -77,6 +78,8 @@ public class World
         Safehouse = MakeSpecial(r, SafeI, SafeJ, new Color(70, 150, 90, 255), out SafehouseDoor);
         GunShop = MakeSpecial(r, GunI, GunJ, new Color(150, 90, 50, 255), out GunShopDoor);
         Store = MakeSpecial(r, StoreI, StoreJ, new Color(60, 150, 160, 255), out StoreDoor);
+        Gas = MakeSpecial(r, GasI, GasJ, new Color(200, 60, 60, 255), out GasDoor);
+        Villa = MakeSpecial(r, VillaI, VillaJ, new Color(150, 110, 200, 255), out VillaDoor);
     }
 
     /// <summary>Nahradi obsah bloku jednou velkou budovou, dvere jsou na silnici nad ni.</summary>
@@ -340,6 +343,8 @@ public class World
         DrawSpecial(Safehouse, "UKRYT", new Color(120, 220, 150, 255), x0, y0, x1, y1);
         DrawSpecial(GunShop, "ZBROJNICE", new Color(255, 170, 80, 255), x0, y0, x1, y1);
         DrawSpecial(Store, "VECERKA", new Color(120, 220, 230, 255), x0, y0, x1, y1);
+        DrawSpecial(Gas, "BENZINKA", new Color(255, 110, 110, 255), x0, y0, x1, y1);
+        DrawSpecial(Villa, "VILA", new Color(200, 160, 255, 255), x0, y0, x1, y1);
     }
 
     void DrawSpecial(Rectangle b, string label, Color accent, float x0, float y0, float x1, float y1)

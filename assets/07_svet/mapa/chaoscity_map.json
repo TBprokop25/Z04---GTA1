@@ -1,0 +1,746 @@
+{
+  "tileSize": 256,
+  "widthTiles": 64,
+  "heightTiles": 48,
+  "worldPx": [
+    16384,
+    12288
+  ],
+  "chunks": {
+    "size": 8,
+    "cols": 8,
+    "rows": 6,
+    "naming": "A1..H6"
+  },
+  "districts": [
+    {
+      "name": "Beverly Hills",
+      "rect": [
+        8.7,
+        0,
+        36.3,
+        11
+      ]
+    },
+    {
+      "name": "Midtown",
+      "rect": [
+        8,
+        12,
+        20,
+        12
+      ]
+    },
+    {
+      "name": "Centrum",
+      "rect": [
+        28,
+        12,
+        18,
+        24
+      ]
+    },
+    {
+      "name": "Předměstí",
+      "rect": [
+        8,
+        24,
+        20,
+        24
+      ]
+    },
+    {
+      "name": "Jižní sídliště",
+      "rect": [
+        28,
+        36,
+        18,
+        12
+      ]
+    },
+    {
+      "name": "Průmysl",
+      "rect": [
+        46,
+        30.6,
+        18,
+        17.4
+      ]
+    },
+    {
+      "name": "Venkov",
+      "rect": [
+        46,
+        0,
+        18,
+        30.6
+      ]
+    },
+    {
+      "name": "Pláž a oceán",
+      "rect": [
+        0,
+        0,
+        7.3,
+        48
+      ]
+    }
+  ],
+  "roads": [
+    {
+      "type": "hwy",
+      "name": "Dálnice D1",
+      "from": [
+        7.3,
+        12
+      ],
+      "to": [
+        64,
+        12
+      ],
+      "widthTiles": 1.5
+    },
+    {
+      "type": "hwy",
+      "name": "Dálnice D2",
+      "from": [
+        46,
+        0
+      ],
+      "to": [
+        46,
+        48
+      ],
+      "widthTiles": 1.5
+    },
+    {
+      "type": "ave",
+      "name": "Pobřežní třída",
+      "from": [
+        8,
+        0
+      ],
+      "to": [
+        8,
+        48
+      ],
+      "widthTiles": 0.95
+    },
+    {
+      "type": "ave",
+      "name": "Bulvár Chaosu",
+      "from": [
+        8,
+        24
+      ],
+      "to": [
+        64,
+        24
+      ],
+      "widthTiles": 0.95
+    },
+    {
+      "type": "ave",
+      "name": "28. avenue",
+      "from": [
+        28,
+        12
+      ],
+      "to": [
+        28,
+        48
+      ],
+      "widthTiles": 0.95
+    },
+    {
+      "type": "ave",
+      "name": "Jižní třída",
+      "from": [
+        8,
+        36
+      ],
+      "to": [
+        46,
+        36
+      ],
+      "widthTiles": 0.95
+    },
+    {
+      "type": "ave",
+      "name": "Přístavní",
+      "from": [
+        46,
+        40
+      ],
+      "to": [
+        64,
+        40
+      ],
+      "widthTiles": 0.95
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        12,
+        12
+      ],
+      "to": [
+        12,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        16,
+        12
+      ],
+      "to": [
+        16,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        20,
+        12
+      ],
+      "to": [
+        20,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        24,
+        12
+      ],
+      "to": [
+        24,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        8,
+        16
+      ],
+      "to": [
+        28,
+        16
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        8,
+        20
+      ],
+      "to": [
+        28,
+        20
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        8,
+        28
+      ],
+      "to": [
+        28,
+        28
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        8,
+        32
+      ],
+      "to": [
+        28,
+        32
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        8,
+        40
+      ],
+      "to": [
+        28,
+        40
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        8,
+        44
+      ],
+      "to": [
+        28,
+        44
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        32,
+        12
+      ],
+      "to": [
+        32,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        36,
+        12
+      ],
+      "to": [
+        36,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        40,
+        12
+      ],
+      "to": [
+        40,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        28,
+        16
+      ],
+      "to": [
+        46,
+        16
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        28,
+        20
+      ],
+      "to": [
+        46,
+        20
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        28,
+        28
+      ],
+      "to": [
+        46,
+        28
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        28,
+        32
+      ],
+      "to": [
+        46,
+        32
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        28,
+        40
+      ],
+      "to": [
+        46,
+        40
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        28,
+        44
+      ],
+      "to": [
+        46,
+        44
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        50,
+        12
+      ],
+      "to": [
+        50,
+        24
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        52,
+        24
+      ],
+      "to": [
+        52,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        58,
+        40
+      ],
+      "to": [
+        58,
+        48
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        46,
+        32
+      ],
+      "to": [
+        64,
+        32
+      ],
+      "widthTiles": 0.6
+    },
+    {
+      "type": "st",
+      "name": "",
+      "from": [
+        46,
+        44
+      ],
+      "to": [
+        64,
+        44
+      ],
+      "widthTiles": 0.6
+    }
+  ],
+  "curvedRoads": [
+    {
+      "type": "hill",
+      "svgPath": "M8 6.5 C10.5 6.5 12 3.2 15 3.2 S18.5 6.6 21.5 6.2 S25.5 2.6 29 3 S34.5 7 38 6.2 S42.5 3.2 45.2 4",
+      "widthTiles": 0.44
+    },
+    {
+      "type": "hill",
+      "svgPath": "M12 12 C12 10.2 13.6 9.6 14.2 8 S15.4 4.6 15 3.3",
+      "widthTiles": 0.44
+    },
+    {
+      "type": "hill",
+      "svgPath": "M20 12 C20 10.4 18.4 9.6 18.8 8.2 S21 6.6 21.5 6.2",
+      "widthTiles": 0.44
+    },
+    {
+      "type": "hill",
+      "svgPath": "M28 12 C28 10 30.4 9.4 30.2 7.4 S29.6 4.6 30 3.4 S31 1.6 33 1.4",
+      "widthTiles": 0.44
+    },
+    {
+      "type": "hill",
+      "svgPath": "M36 12 C36 10.2 34.4 9.4 35.2 8.2 S37.6 7 38 6.3",
+      "widthTiles": 0.44
+    },
+    {
+      "type": "hill",
+      "svgPath": "M40 12 C41 10.4 43.2 10.2 42.8 8.6 S40.4 5.6 41 4.2",
+      "widthTiles": 0.44
+    }
+  ],
+  "dirtRoads": [
+    {
+      "svgPath": "M50 11.05 C50 8.5 51.5 7 51.4 4.5 S50.6 1.5 51 0",
+      "widthTiles": 0.32
+    },
+    {
+      "svgPath": "M58.5 11.05 C58.5 9.6 59.4 9 60.2 8.4 S63 7 64 6.5",
+      "widthTiles": 0.32
+    },
+    {
+      "svgPath": "M60 23.3 C60 21 61.8 19.6 61.6 17.6",
+      "widthTiles": 0.32
+    }
+  ],
+  "river": {
+    "svgPath": "M55.5 8.5 C56.5 11 57.2 13 57.4 15 S58 19.5 60.5 22 S63 25.5 64.6 27.5",
+    "widthTiles": 1.1
+  },
+  "gasStations": [
+    {
+      "id": "G1",
+      "rect": [
+        50.55,
+        13.2,
+        2.6,
+        2.2
+      ]
+    },
+    {
+      "id": "G2",
+      "rect": [
+        24.5,
+        36.7,
+        3,
+        2.82
+      ]
+    },
+    {
+      "id": "G3",
+      "rect": [
+        47,
+        40.7,
+        2.8,
+        2.6
+      ]
+    },
+    {
+      "id": "G4",
+      "rect": [
+        8.7,
+        16.5,
+        2.82,
+        3
+      ]
+    },
+    {
+      "id": "G5",
+      "rect": [
+        55.5,
+        21.1,
+        2.8,
+        2.2
+      ]
+    }
+  ],
+  "pois": [
+    {
+      "id": "hosp",
+      "name": "Nemocnice",
+      "pos": [
+        30.1,
+        30
+      ],
+      "interior": "Nemocnice"
+    },
+    {
+      "id": "bank",
+      "name": "Banka",
+      "pos": [
+        34,
+        18
+      ],
+      "interior": "Banka"
+    },
+    {
+      "id": "park",
+      "name": "Centrální park",
+      "pos": [
+        38,
+        21.9
+      ],
+      "interior": null
+    },
+    {
+      "id": "tower",
+      "name": "Chaos Tower",
+      "pos": [
+        42.77,
+        14.23
+      ],
+      "interior": null
+    },
+    {
+      "id": "police",
+      "name": "Policie",
+      "pos": [
+        41.85,
+        30
+      ],
+      "interior": null
+    },
+    {
+      "id": "gun",
+      "name": "Zbrojnice",
+      "pos": [
+        13.3,
+        41.39
+      ],
+      "interior": "Zbrojnice"
+    },
+    {
+      "id": "store",
+      "name": "Večerka",
+      "pos": [
+        14.79,
+        41.39
+      ],
+      "interior": "Večerka"
+    },
+    {
+      "id": "park2",
+      "name": "Park",
+      "pos": [
+        18,
+        33.9
+      ],
+      "interior": null
+    },
+    {
+      "id": "safe",
+      "name": "Úkryt",
+      "pos": [
+        20.98,
+        40.98
+      ],
+      "interior": "Úkryt"
+    },
+    {
+      "id": "port",
+      "name": "Kontejnery",
+      "pos": [
+        55.64,
+        35.9
+      ],
+      "interior": null
+    },
+    {
+      "id": "gas",
+      "name": "Benzínka G1",
+      "pos": [
+        51.46,
+        14.41
+      ],
+      "interior": "Benzínka"
+    },
+    {
+      "id": "gas",
+      "name": "Benzínka G2",
+      "pos": [
+        25.55,
+        38.25
+      ],
+      "interior": "Benzínka"
+    },
+    {
+      "id": "gas",
+      "name": "Benzínka G3",
+      "pos": [
+        47.98,
+        42.13
+      ],
+      "interior": "Benzínka"
+    },
+    {
+      "id": "gas",
+      "name": "Benzínka G4",
+      "pos": [
+        9.69,
+        18.15
+      ],
+      "interior": "Benzínka"
+    },
+    {
+      "id": "gas",
+      "name": "Benzínka G5",
+      "pos": [
+        56.48,
+        22.31
+      ],
+      "interior": "Benzínka"
+    },
+    {
+      "id": "farm",
+      "name": "Farma",
+      "pos": [
+        62,
+        16
+      ],
+      "interior": null
+    },
+    {
+      "id": "villa",
+      "name": "Vila",
+      "pos": [
+        28.61,
+        6.39
+      ],
+      "interior": "Vila Beverly Hills"
+    }
+  ]
+}

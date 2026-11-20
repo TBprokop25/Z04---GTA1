@@ -4,22 +4,33 @@ using Raylib_cs;
 namespace Z04;
 
 // Interiéry budov - samostatný režim, do kterého se vejde klávesou E a dá se tam něco dělat.
+// Každá místnost je plně vyrenderovaný PNG podklad (assets/07_svet/interiery/room_*.png);
+// interaktivní stanice jsou neviditelné body umístěné nad namalovaným nábytkem.
 public partial class Game
 {
-    public enum Place { None, Bank, Hospital, Safehouse, GunShop, Store }
+    public enum Place { None, Bank, Hospital, Safehouse, GunShop, Store, Gas, Villa }
 
     Place place;
-    Vector2 ipPos, worldReturn;     // pozice hrace v mistnosti (lokalni) a navratova pozice ve svete
+    Vector2 ipPos, worldReturn;     // pozice hrace v mistnosti (lokalni, v nativnich px PNG) a navratova pozice ve svete
     float ipWalk, ipFace = -MathF.PI / 2;
     int savings;                    // ulozene penize v bance (bezpecne pri smrti)
+    float villaCd, gasCd;           // cooldowny loupeze (bankCd je v Game.cs)
     Color playerCol = new(210, 150, 40, 255);
 
-    class Station { public Vector2 Pos; public string Label = ""; public int Action; public Color Col; public string Furn = ""; }
+    // Stanice: Action >= 0 = jednorazova akce (DoStation), Action < 0 = loupez (drzet E).
+    class Station
+    {
+        public Vector2 Pos; public string Label = ""; public int Action;
+        public int LootMin, LootMax; public float RobHeat, RobTime, RobCdSet;
+    }
     readonly List<Station> stations = new();
 
-    const float IW = 1040, IH = 600;           // rozmer mistnosti
-    float IOX => (W - IW) / 2f;                 // posun na obrazovce
-    float IOY => (H - IH) / 2f + 20;
+    // Rozmer aktualni mistnosti v nativnich px PNG a pozice vychodu.
+    float RNW = 1024, RNH = 768;
+    Vector2 exitPos;
+    string roomTex = "";
+
+    const float WallM = 26f;        // okraj mistnosti (stena), kam hrac nedojde
 
     static string PlaceName(Place p) => p switch
     {
@@ -27,7 +38,10 @@ public partial class Game
         Place.Hospital => "NEMOCNICE",
         Place.Safehouse => "UKRYT",
         Place.GunShop => "ZBROJNICE",
-        _ => "VECERKA",
+        Place.Store => "VECERKA",
+        Place.Gas => "BENZINKA",
+        Place.Villa => "VILA",
+        _ => "",
     };
 
     void EnterPlace(Place p, Vector2 worldDoor)
@@ -35,11 +49,14 @@ public partial class Game
         place = p;
         worldReturn = pPos;
         scr = Scr.Interior;
-        ipPos = new Vector2(IW / 2, IH - 70);
-        ipFace = -MathF.PI / 2;
         robbing = false; robT = 0;
         shop = false;
         BuildStations(p);
+        // start u vychodu, obraceny do mistnosti
+        ipPos = new Vector2(exitPos.X, exitPos.Y - 70);
+        ipPos.X = Math.Clamp(ipPos.X, WallM, RNW - WallM);
+        ipPos.Y = Math.Clamp(ipPos.Y, WallM, RNH - WallM);
+        ipFace = -MathF.PI / 2;
         Sfx.Play(Snd.Click);
         Say("Vstoupil jsi: " + PlaceName(p) + "  (ESC = odejit)");
     }
@@ -54,35 +71,78 @@ public partial class Game
         Sfx.Play(Snd.Click);
     }
 
+    // Loupezny cooldown podle typu stanice (persistuje i mimo interier - tika v UpdateBank).
+    float GetRobCd(int action) => action == -1 ? bankCd : action == -2 ? villaCd : gasCd;
+    void SetRobCd(int action, float v) { if (action == -1) bankCd = v; else if (action == -2) villaCd = v; else gasCd = v; }
+
     void BuildStations(Place p)
     {
         stations.Clear();
-        var steel = new Color(120, 124, 132, 255);
-        var wood = new Color(120, 86, 54, 255);
+        void Act(float x, float y, string label, int action) => stations.Add(new Station { Pos = new(x, y), Label = label, Action = action });
+        void Rob(float x, float y, string label, int action, int lo, int hi, float heat, float time, float cd) =>
+            stations.Add(new Station { Pos = new(x, y), Label = label, Action = action, LootMin = lo, LootMax = hi, RobHeat = heat, RobTime = time, RobCdSet = cd });
+
         switch (p)
         {
             case Place.Bank:
-                stations.Add(new Station { Pos = new(IW / 2, 150), Label = "SEJF - podrz [E] a vykradni", Action = -1, Col = new Color(210, 180, 70, 255), Furn = "vault_door" });
-                stations.Add(new Station { Pos = new(IW * 0.22f, 250), Label = "PREPAZKA - [E] vlozit penize", Action = 1, Col = steel, Furn = "teller_counter" });
-                stations.Add(new Station { Pos = new(IW * 0.78f, 250), Label = "BANKOMAT - [E] vybrat penize", Action = 2, Col = steel, Furn = "atm" });
+                RNW = 1024; RNH = 768; roomTex = "room_bank"; exitPos = new(512, 724);
+                Rob(866, 150, "SEJF - podrz [E] a vykradni", -1, 5000, 8000, 150f, 12f, 150f);
+                Act(400, 300, "PREPAZKA - [E] vlozit penize", 1);
+                Act(220, 705, "BANKOMAT - [E] vybrat penize", 2);
                 break;
             case Place.Hospital:
-                stations.Add(new Station { Pos = new(IW / 2, 160), Label = $"LUZKO - [E] plne vyleceni (${HospitalFee})", Action = 3, Col = new Color(230, 235, 240, 255), Furn = "hospital_bed" });
-                stations.Add(new Station { Pos = new(IW * 0.76f, 270), Label = "DAROVAT KREV - [E] +$150 za -25 HP", Action = 4, Col = new Color(200, 80, 80, 255), Furn = "blood_chair" });
+                RNW = 1024; RNH = 768; roomTex = "room_hospital"; exitPos = new(160, 735);
+                Act(360, 512, $"ORDINACE - [E] plne vyleceni (${HospitalFee})", 3);
+                Act(420, 640, "DAROVAT KREV - [E] +$150 za -25 HP", 4);
                 break;
             case Place.Safehouse:
-                stations.Add(new Station { Pos = new(IW / 2, 160), Label = "POSTEL - [E] ulozit a smazat hvezdy", Action = 5, Col = new Color(90, 120, 170, 255), Furn = "bed" });
-                stations.Add(new Station { Pos = new(IW * 0.22f, 260), Label = "TREZOR - [E] ulozit penize", Action = 1, Col = steel, Furn = "floor_safe" });
-                stations.Add(new Station { Pos = new(IW * 0.78f, 260), Label = "SKRIN - [E] prevleknout", Action = 6, Col = wood, Furn = "wardrobe" });
+                RNW = 896; RNH = 640; roomTex = "room_safehouse"; exitPos = new(112, 610);
+                Act(705, 150, "POSTEL - [E] ulozit a smazat hvezdy", 5);
+                Act(145, 430, "TREZOR - [E] ulozit penize", 1);
+                Act(852, 90, "SKRIN - [E] prevleknout", 6);
                 break;
             case Place.GunShop:
-                stations.Add(new Station { Pos = new(IW / 2, 190), Label = "PULT - [E] obchod se zbranemi", Action = 7, Col = wood, Furn = "gun_counter" });
+                RNW = 768; RNH = 512; roomTex = "room_gunshop"; exitPos = new(145, 480);
+                Act(185, 205, "PULT - [E] obchod se zbranemi", 7);
                 break;
-            default: // Store
-                stations.Add(new Station { Pos = new(IW * 0.3f, 190), Label = "LEDNICE - [E] zdravi +40 ($60)", Action = 8, Col = new Color(90, 160, 200, 255), Furn = "fridge" });
-                stations.Add(new Station { Pos = new(IW * 0.7f, 190), Label = "REGAL - [E] brneni +50 ($800)", Action = 9, Col = steel, Furn = "shelf" });
+            case Place.Store:
+                RNW = 768; RNH = 512; roomTex = "room_store"; exitPos = new(648, 480);
+                Act(40, 220, "LEDNICE - [E] zdravi +40 ($60)", 8);
+                Act(180, 160, "REGAL - [E] brneni +50 ($800)", 9);
+                break;
+            case Place.Gas:
+                RNW = 768; RNH = 512; roomTex = "room_gas"; exitPos = new(128, 480);
+                Act(40, 300, "LEDNICE - [E] napoj, zdravi +30 ($40)", 10);
+                Act(500, 445, "STANEK - [E] hotdog, zdravi +55 ($70)", 11);
+                Rob(300, 350, "KASA - podrz [E] a vyber", -3, 400, 1100, 70f, 4f, 60f);
+                break;
+            default: // Villa
+                RNW = 1280; RNH = 896; roomTex = "room_villa"; exitPos = new(350, 850);
+                Rob(750, 80, "PRACOVNA - podrz [E] a vyloupni vilu", -2, 3000, 6000, 120f, 9f, 120f);
+                Act(200, 60, "SATNA - [E] prevleknout", 6);
+                Act(275, 315, "BAR - [E] obcerstveni, zdravi +60 ($50)", 12);
                 break;
         }
+    }
+
+    const float ITopBar = 44f;      // horni pruh
+
+    // Prepocet: velikost a umisteni mistnosti na obrazovce.
+    float RScale => MathF.Min((W - 48f) / RNW, (H - ITopBar - 70f) / RNH);
+    float ROX => (W - RNW * RScale) / 2f;
+    float ROY => ITopBar + (H - ITopBar - 46f - RNH * RScale) / 2f;
+    Vector2 IScreen(Vector2 local) => new(ROX + local.X * RScale, ROY + local.Y * RScale);
+
+    Station? NearestRob()
+    {
+        Station? best = null; float bd = 95;
+        foreach (var s in stations)
+        {
+            if (s.Action >= 0) continue;
+            float d = Vector2.Distance(ipPos, s.Pos);
+            if (d < bd) { bd = d; best = s; }
+        }
+        return best;
     }
 
     void UpdateInterior(float dt)
@@ -105,44 +165,44 @@ public partial class Game
         if (mv != Vector2.Zero)
         {
             mv = Vector2.Normalize(mv);
-            ipPos += mv * 180f * dt;
-            ipWalk += 180f * dt * 0.09f;
+            ipPos += mv * 200f * dt;
+            ipWalk += 200f * dt * 0.09f;
             ipFace = MathF.Atan2(mv.Y, mv.X);
         }
-        ipPos.X = Math.Clamp(ipPos.X, 36, IW - 36);
-        ipPos.Y = Math.Clamp(ipPos.Y, 36, IH - 36);
+        ipPos.X = Math.Clamp(ipPos.X, WallM, RNW - WallM);
+        ipPos.Y = Math.Clamp(ipPos.Y, WallM, RNH - WallM);
 
-        // sejf v bance - drzet E
-        var vault = place == Place.Bank ? stations[0] : null;
-        if (vault != null && bankCd <= 0 && Vector2.Distance(ipPos, vault.Pos) < 80 && Raylib.IsKeyDown(Keys.E))
+        // loupez - drzet E u sejfu/kasy
+        var rob = NearestRob();
+        if (rob != null && GetRobCd(rob.Action) <= 0 && Raylib.IsKeyDown(Keys.E))
         {
             if (!robbing) { robbing = true; robT = 0; Sfx.Play(Snd.Siren, 1f, 0.5f); }
             robT += dt;
-            if (robT >= RobTime)
+            if (robT >= rob.RobTime)
             {
-                int loot = rnd.Next(5000, 8001);
+                int loot = rnd.Next(rob.LootMin, rob.LootMax + 1);
                 money += loot; totalChaos += loot;
-                heat = MathF.Max(heat, 150f);     // 4 hvezdy po odchodu
-                bankCd = 150f;
+                heat = MathF.Max(heat, rob.RobHeat);
+                SetRobCd(rob.Action, rob.RobCdSet);
                 robbing = false;
                 Sfx.Play(Snd.Bank);
                 SaveGame();
-                Say($"Sejf vykraden! +${loot} - venku cekaji poldove, utikej!");
+                Say($"Vyloupeno! +${loot} - venku cekaji poldove, utikej!");
             }
             return;
         }
-        if (robbing && (vault == null || Vector2.Distance(ipPos, vault.Pos) >= 80 || !Raylib.IsKeyDown(Keys.E)))
-            robbing = false;
+        if (robbing && rob == null) robbing = false;
+        if (robbing && !Raylib.IsKeyDown(Keys.E)) robbing = false;
 
-        // odchod z budovy (dvere dole uprostred nebo ESC)
-        bool atDoor = ipPos.Y > IH - 60 && MathF.Abs(ipPos.X - IW / 2) < 80;
+        // odchod z budovy (u vychodu nebo ESC)
+        bool atDoor = Vector2.Distance(ipPos, exitPos) < 72;
         if (Raylib.IsKeyPressed(Keys.Escape) || Raylib.IsKeyPressed(Keys.P)) { ExitPlace(); return; }
         if (atDoor && Raylib.IsKeyPressed(Keys.E)) { ExitPlace(); return; }
 
-        // interakce se stanici
+        // interakce se stanici (jen ne-loupezne)
         if (Raylib.IsKeyPressed(Keys.E) && !atDoor)
         {
-            Station? best = null; float bd = 80;
+            Station? best = null; float bd = 95;
             foreach (var s in stations)
             {
                 if (s.Action < 0) continue;
@@ -195,109 +255,101 @@ public partial class Game
                 else if (money >= ArmorPrice) { money -= ArmorPrice; pArmor = MathF.Min(100, pArmor + 50); Sfx.Play(Snd.Pickup); Say("Brneni +50."); }
                 else Say($"Nemas ${ArmorPrice}.");
                 break;
+            case 10:
+                if (pHp >= 100) Say("Zdravi je plne.");
+                else if (money >= 40) { money -= 40; pHp = MathF.Min(100, pHp + 30); Sfx.Play(Snd.Pickup); Say("Zdravi +30."); }
+                else Say("Nemas $40.");
+                break;
+            case 11:
+                if (pHp >= 100) Say("Zdravi je plne.");
+                else if (money >= 70) { money -= 70; pHp = MathF.Min(100, pHp + 55); Sfx.Play(Snd.Pickup); Say("Hotdog: zdravi +55."); }
+                else Say("Nemas $70.");
+                break;
+            case 12:
+                if (pHp >= 100) Say("Zdravi je plne.");
+                else if (money >= 50) { money -= 50; pHp = MathF.Min(100, pHp + 60); Sfx.Play(Snd.Pickup); Say("Obcerstveni: zdravi +60."); }
+                else Say("Nemas $50.");
+                break;
         }
     }
 
     // ------------------------------------------------------------ kresleni interieru
 
-    Vector2 IScreen(Vector2 local) => new(IOX + local.X, IOY + local.Y);
-
     void DrawInterior()
     {
-        Raylib.ClearBackground(new Color(18, 18, 24, 255));
+        Raylib.ClearBackground(new Color(14, 14, 20, 255));
 
-        float ox = IOX, oy = IOY;
-        Color floor = place switch
-        {
-            Place.Bank => new Color(60, 58, 50, 255),
-            Place.Hospital => new Color(220, 228, 232, 255),
-            Place.Safehouse => new Color(78, 66, 58, 255),
-            Place.GunShop => new Color(54, 48, 44, 255),
-            _ => new Color(70, 78, 82, 255),
-        };
+        float ox = ROX, oy = ROY, sc = RScale;
+        var dst = new Rectangle(ox, oy, RNW * sc, RNH * sc);
+        string tex = $"07_svet/interiery/{roomTex}.png";
 
-        // podlaha - dlazdicove textury nebo plna barva + mrizka
-        string floorTex = place switch
+        if (Assets.Ready && Assets.Have(tex))
         {
-            Place.Bank => "04_interiery/podlahy/floor_bank.png",
-            Place.Hospital => "04_interiery/podlahy/floor_hospital.png",
-            Place.Safehouse => "04_interiery/podlahy/floor_safehouse.png",
-            Place.GunShop => "04_interiery/podlahy/floor_gunshop.png",
-            _ => "04_interiery/podlahy/floor_store.png",
-        };
-        if (Assets.Ready && Assets.Have(floorTex))
-        {
-            const float ts = 128f;   // 256px @2x
-            for (float x = 0; x < IW; x += ts)
-                for (float y = 0; y < IH; y += ts)
-                    Assets.DrawStretch(floorTex, new Rectangle(ox + x, oy + y, MathF.Min(ts, IW - x), MathF.Min(ts, IH - y)), Pal.White);
+            // stin pod mistnosti + samotny render
+            Raylib.DrawRectangle((int)ox - 6, (int)oy - 6, (int)(RNW * sc) + 12, (int)(RNH * sc) + 12, Raylib.Fade(Pal.Black, 0.5f));
+            Assets.DrawStretch(tex, dst, Pal.White);
         }
         else
         {
-            Raylib.DrawRectangle((int)ox, (int)oy, (int)IW, (int)IH, floor);
-            for (float x = 0; x < IW; x += 64)
-                Raylib.DrawLine((int)(ox + x), (int)oy, (int)(ox + x), (int)(oy + IH), Raylib.Fade(Pal.Black, 0.10f));
-            for (float y = 0; y < IH; y += 64)
-                Raylib.DrawLine((int)ox, (int)(oy + y), (int)(ox + IW), (int)(oy + y), Raylib.Fade(Pal.Black, 0.10f));
+            // zaloha: plna barva kdyz PNG chybi
+            Raylib.DrawRectangleRec(dst, new Color(60, 60, 70, 255));
+            Raylib.DrawRectangleLinesEx(dst, 3, Raylib.Fade(Pal.Black, 0.4f));
         }
 
-        // steny
-        var wall = new Color(40, 40, 48, 255);
-        Raylib.DrawRectangle((int)ox - 16, (int)oy - 16, (int)IW + 32, 16, wall);
-        Raylib.DrawRectangle((int)ox - 16, (int)(oy + IH), (int)IW + 32, 16, wall);
-        Raylib.DrawRectangle((int)ox - 16, (int)oy - 16, 16, (int)IH + 32, wall);
-        Raylib.DrawRectangle((int)(ox + IW), (int)oy - 16, 16, (int)IH + 32, wall);
-        Raylib.DrawRectangleLinesEx(new Rectangle(ox, oy, IW, IH), 2, Raylib.Fade(Pal.Black, 0.3f));
+        // vychod - zvyrazneni kdyz jsi blizko
+        var ep = IScreen(exitPos);
+        bool nearExit = Vector2.Distance(ipPos, exitPos) < 72;
+        float pulse = 0.5f + 0.5f * MathF.Sin(animT * 6f);
+        Raylib.DrawCircleLines((int)ep.X, (int)ep.Y, 30 * sc, Raylib.Fade(Pal.Yellow, nearExit ? 0.9f : 0.35f + pulse * 0.2f));
+        if (nearExit)
+        {
+            const string et = "VYCHOD [E]";
+            int tw = Raylib.MeasureText(et, 18);
+            Raylib.DrawRectangle((int)ep.X - tw / 2 - 8, (int)ep.Y - 58, tw + 16, 26, Raylib.Fade(Pal.Black, 0.7f));
+            Txt(et, (int)ep.X - tw / 2, (int)ep.Y - 54, 18, Pal.Yellow);
+        }
 
-        // dvere dole uprostred
-        var door = IScreen(new Vector2(IW / 2, IH));
-        if (Assets.Ready && Assets.Have("04_interiery/zdi_a_dvere/door_mat.png"))
-            Assets.DrawCentered("04_interiery/zdi_a_dvere/door_mat.png", door + new Vector2(0, 2), 0, 0.5f, Pal.White);
-        else
-            Raylib.DrawRectangle((int)door.X - 60, (int)door.Y - 6, 120, 20, new Color(150, 110, 60, 255));
-        Txt("VYCHOD [E]", (int)door.X - 52, (int)door.Y - 4, 16, Pal.White);
-
-        // stanice (nabytek) + popisek a zvyrazneni kdyz jsi blizko
+        // stanice - znacka + popisek kdyz jsi blizko
         foreach (var s in stations)
         {
             var sp = IScreen(s.Pos);
-            bool near = Vector2.Distance(ipPos, s.Pos) < 80;
-            string furnTex = s.Furn.Length > 0 ? $"04_interiery/nabytek/{s.Furn}.png" : "";
-            if (Assets.Ready && furnTex.Length > 0 && Assets.Have(furnTex))
-            {
-                Assets.DrawCentered(furnTex, sp, 0, 0.5f, Pal.White);
-            }
-            else
-            {
-                Raylib.DrawRectangle((int)sp.X - 44, (int)sp.Y - 28 + 6, 88, 56, Raylib.Fade(Pal.Black, 0.3f));
-                Raylib.DrawRectangleRounded(new Rectangle(sp.X - 44, sp.Y - 28, 88, 56), 0.2f, 6, s.Col);
-                Raylib.DrawRectangleLinesEx(new Rectangle(sp.X - 44, sp.Y - 28, 88, 56), 2, Raylib.Fade(Pal.Black, 0.5f));
-                DrawStationIcon(s, sp);
-            }
+            bool near = Vector2.Distance(ipPos, s.Pos) < 95;
+            bool isRob = s.Action < 0;
+            bool onCd = isRob && GetRobCd(s.Action) > 0;
+            Color mark = isRob ? (onCd ? new Color(130, 130, 135, 255) : new Color(240, 200, 70, 255))
+                               : new Color(120, 200, 255, 255);
+
+            float r = (near ? 13 : 10) + pulse * 2.5f;
+            Raylib.DrawCircleV(sp, r + 3, Raylib.Fade(Pal.Black, 0.35f));
+            Raylib.DrawCircleLines((int)sp.X, (int)sp.Y, r, Raylib.Fade(mark, near ? 1f : 0.7f));
+            Raylib.DrawCircleV(sp, r * 0.45f, Raylib.Fade(mark, near ? 0.9f : 0.55f));
+            Txt(isRob ? "!" : "E", (int)sp.X - 4, (int)sp.Y - 8, 16, Raylib.Fade(Pal.White, near ? 1f : 0.7f));
 
             if (near)
             {
-                int tw = Raylib.MeasureText(s.Label, 18);
-                Raylib.DrawRectangle((int)sp.X - tw / 2 - 8, (int)sp.Y - 62, tw + 16, 26, Raylib.Fade(Pal.Black, 0.7f));
-                Txt(s.Label, (int)sp.X - tw / 2, (int)sp.Y - 58, 18, Pal.Yellow);
+                string lbl = onCd ? $"{s.Label}  (pockej {Math.Ceiling(GetRobCd(s.Action))}s)" : s.Label;
+                int tw = Raylib.MeasureText(lbl, 18);
+                Raylib.DrawRectangle((int)sp.X - tw / 2 - 8, (int)sp.Y - 46, tw + 16, 26, Raylib.Fade(Pal.Black, 0.75f));
+                Txt(lbl, (int)sp.X - tw / 2, (int)sp.Y - 42, 18, onCd ? new Color(220, 220, 225, 255) : Pal.Yellow);
             }
         }
 
         DrawInteriorPlayer();
 
-        // vykradani sejfu - progress
+        // loupez - progress
         if (robbing)
         {
             Raylib.DrawRectangleRounded(new Rectangle(W / 2 - 180, 70, 360, 50), 0.3f, 8, Raylib.Fade(Pal.Black, 0.6f));
-            Txt("VYKRADAM SEJF...", W / 2 - 100, 74, 22, Pal.Yellow);
-            Bar(W / 2 - 160, 100, 320, 14, robT / RobTime, Pal.Yellow);
+            Txt("LOUPEZ PROBIHA...", W / 2 - 100, 74, 22, Pal.Yellow);
+            var rr = NearestRob();
+            Bar(W / 2 - 160, 100, 320, 14, rr != null ? robT / rr.RobTime : 0f, Pal.Yellow);
         }
 
         // horni pruh s nazvem a penezi
-        Raylib.DrawRectangle(0, 0, W, 40, Raylib.Fade(Pal.Black, 0.55f));
+        Raylib.DrawRectangle(0, 0, W, 40, Raylib.Fade(Pal.Black, 0.6f));
         Txt(PlaceName(place), 20, 8, 26, Pal.Yellow);
         Txt($"Hotovost: ${money}    Na ucte: ${savings}    HP {(int)pHp}  AP {(int)pArmor}", 300, 11, 20, Pal.White);
-        Txt("WASD = chuze    [E] = pouzit / vychod dole    ESC = odejit", 20, H - 28, 16, new Color(200, 200, 205, 255));
+        Txt("WASD = chuze    [E] = pouzit    u vychodu [E] / ESC = odejit", 20, H - 28, 16, new Color(200, 200, 205, 255));
 
         if (msgT > 0)
         {
@@ -310,44 +362,22 @@ public partial class Game
         if (shop) DrawShop();
     }
 
-    void DrawStationIcon(Station s, Vector2 sp)
-    {
-        switch (s.Action)
-        {
-            case -1: // sejf
-                Raylib.DrawCircle((int)sp.X, (int)sp.Y, 14, new Color(40, 40, 44, 255));
-                Raylib.DrawCircleLines((int)sp.X, (int)sp.Y, 14, new Color(230, 210, 120, 255));
-                Raylib.DrawCircle((int)sp.X + 6, (int)sp.Y, 3, new Color(230, 210, 120, 255));
-                break;
-            case 3: // luzko
-                Raylib.DrawRectangle((int)sp.X - 34, (int)sp.Y - 10, 24, 20, Pal.White);
-                Raylib.DrawRectangle((int)sp.X - 36, (int)sp.Y - 14, 72, 8, new Color(200, 70, 70, 255));
-                break;
-            case 7: // zbrane na stene
-                for (int i = -1; i <= 1; i++)
-                    Raylib.DrawRectangle((int)sp.X - 24 + (i + 1) * 20, (int)sp.Y - 4, 16, 4, new Color(30, 30, 34, 255));
-                break;
-            default:
-                Raylib.DrawText("$", (int)sp.X - 6, (int)sp.Y - 10, 24, Raylib.Fade(Pal.Black, 0.6f));
-                break;
-        }
-    }
-
     void DrawInteriorPlayer()
     {
         var p = IScreen(ipPos);
+        float sc = MathF.Max(0.7f, RScale * 1.1f);
         var fwd = DirOf(ipFace);
         var side = new Vector2(-fwd.Y, fwd.X);
-        float swing = MathF.Sin(ipWalk) * 3.6f;
+        float swing = MathF.Sin(ipWalk) * 3.6f * sc;
         var skin = new Color(238, 198, 158, 255);
 
-        Raylib.DrawCircleV(p + new Vector2(2, 4), 10f, Raylib.Fade(Pal.Black, 0.3f));
-        Raylib.DrawCircleV(p + side * 3.4f + fwd * swing, 3.2f, new Color(45, 45, 60, 255));
-        Raylib.DrawCircleV(p - side * 3.4f - fwd * swing, 3.2f, new Color(45, 45, 60, 255));
-        Raylib.DrawCircleV(p, 8.6f, playerCol);
-        Raylib.DrawCircleLines((int)p.X, (int)p.Y, 8.6f, Raylib.Fade(Pal.Black, 0.6f));
-        Raylib.DrawCircleV(p + side * 7 - fwd * swing * 0.6f, 2.6f, skin);
-        Raylib.DrawCircleV(p - side * 7 + fwd * swing * 0.6f, 2.6f, skin);
-        Raylib.DrawCircleV(p + fwd * 1.5f, 4.9f, skin);
+        Raylib.DrawCircleV(p + new Vector2(2, 4), 10f * sc, Raylib.Fade(Pal.Black, 0.3f));
+        Raylib.DrawCircleV(p + side * 3.4f * sc + fwd * swing, 3.2f * sc, new Color(45, 45, 60, 255));
+        Raylib.DrawCircleV(p - side * 3.4f * sc - fwd * swing, 3.2f * sc, new Color(45, 45, 60, 255));
+        Raylib.DrawCircleV(p, 8.6f * sc, playerCol);
+        Raylib.DrawCircleLines((int)p.X, (int)p.Y, 8.6f * sc, Raylib.Fade(Pal.Black, 0.6f));
+        Raylib.DrawCircleV(p + side * 7 * sc - fwd * swing * 0.6f, 2.6f * sc, skin);
+        Raylib.DrawCircleV(p - side * 7 * sc + fwd * swing * 0.6f, 2.6f * sc, skin);
+        Raylib.DrawCircleV(p + fwd * 1.5f * sc, 4.9f * sc, skin);
     }
 }
