@@ -141,7 +141,7 @@ public partial class Game
         owned[0] = true;
         for (int i = 0; i < ammo.Length; i++) ammo[i] = Weapons.All[i].Mag;
         LoadGame();
-        pPos = World.Node(4, 4);
+        pPos = world.Spawn;
 
         cam = new Camera2D();
         cam.Offset = new Vector2(W / 2f, H / 2f);
@@ -160,25 +160,25 @@ public partial class Game
     {
         for (int attempt = 0; ; attempt++)
         {
-            bool horiz = rnd.Next(2) == 0;
-            int k = rnd.Next(World.Grid + 1);
-            float along = Rnd(150, World.Size - 150);
-            int dir = horiz ? (rnd.Next(2) == 0 ? 0 : 2) : (rnd.Next(2) == 0 ? 1 : 3);
-            Vector2 d = Dirs[dir];
-            Vector2 right = new(-d.Y, d.X);
-            float off = ai ? 20f : 54f;                 // jizdni pruh vs. krajnice (parkujici auta)
-            float c = k * World.Cell + World.Road / 2;
-            Vector2 pos = (horiz ? new Vector2(along, c) : new Vector2(c, along)) + right * off;
-            if (attempt < 30 && Vector2.Distance(pos, pPos) < minDist) continue;
+            // vyber nahodnou hranu grafu silnic a umisti auto na ni
+            int n0 = rnd.Next(world.Nodes.Count);
+            var nbrs = world.Adj[n0];
+            if (nbrs.Length == 0) continue;
+            int n1 = nbrs[rnd.Next(nbrs.Length)];
+            Vector2 a = world.Nodes[n0], b = world.Nodes[n1];
+            var dir = Vector2.Normalize(b - a);
+            var right = new Vector2(-dir.Y, dir.X);
+            float off = ai ? 18f : 46f;                 // jizdni pruh vs. krajnice (parkujici auta)
+            Vector2 pos = Vector2.Lerp(a, b, (float)rnd.NextDouble()) + right * off;
+            if (attempt < 40 && Vector2.Distance(pos, pPos) < minDist) continue;
 
-            var v = new Vehicle(VKind.Civil, pos, dir * MathF.PI / 2, Pal.Cars[rnd.Next(Pal.Cars.Length)]);
-            // vyber modelu: vetsinou sedan, obcas dodavka/autobus/motorka/sanitka
+            var v = new Vehicle(VKind.Civil, pos, MathF.Atan2(dir.Y, dir.X), Pal.Cars[rnd.Next(Pal.Cars.Length)]);
             double mr = rnd.NextDouble();
             v.Model = mr < 0.62 ? VModel.Sedan : mr < 0.78 ? VModel.Van : mr < 0.88 ? VModel.Bike
                     : mr < 0.96 ? VModel.Bus : VModel.Ambulance;
             if (v.Model == VModel.Ambulance) { v.Body = new Color(240, 240, 245, 255); v.MaxHp = v.Hp = 130f; }
             else if (v.Model == VModel.Bus) { v.MaxHp = v.Hp = 200f; }
-            v.Dir = dir;
+            v.PrevNode = n0; v.LastNode = n1;
             v.Ai = ai;
             if (ai) v.Speed = 150;
             return v;
@@ -203,7 +203,7 @@ public partial class Game
         for (int i = 0; i < 30; i++)
         {
             Vector2 pos = pPos + DirOf(Rnd(0, 2 * MathF.PI)) * Rnd(minDist, maxDist);
-            if (pos.X < 20 || pos.Y < 20 || pos.X > World.Size - 20 || pos.Y > World.Size - 20) continue;
+            if (pos.X < 20 || pos.Y < 20 || pos.X > world.WPx - 20 || pos.Y > world.HPx - 20) continue;
             if (world.PointInBuilding(pos)) continue;
 
             Color col = kind switch
@@ -408,7 +408,7 @@ public partial class Game
         pHp = 100; pArmor = 0; heat = 0; car = null; combo = 0; sprayT = 0; robbing = false; heli = null; holstered = true;
         reloadT = 0;
         for (int i = 0; i < ammo.Length; i++) ammo[i] = Weapons.All[i].Mag;
-        pPos = World.Node(4, 4);
+        pPos = world.Spawn;
         int fee = (int)(money * 0.2f);
         money -= fee;
         Say($"Nemocnice te vylecila. Poplatek: ${fee}");
@@ -558,42 +558,40 @@ public partial class Game
 
     void UpdateCivilAi(Vehicle v, float dt)
     {
-        var d = Dirs[v.Dir];
-        int ni = Math.Clamp((int)MathF.Round((v.Pos.X - World.Road / 2) / World.Cell), 0, World.Grid);
-        int nj = Math.Clamp((int)MathF.Round((v.Pos.Y - World.Road / 2) / World.Cell), 0, World.Grid);
-        var node = World.Node(ni, nj);
-        int id = World.NodeId(ni, nj);
+        if (world.Nodes.Count == 0) { DriveVehicle(v, 0, 0, true, dt); return; }
+        if (v.LastNode < 0 || v.LastNode >= world.Nodes.Count) { v.LastNode = world.NearestNode(v.Pos); v.PrevNode = -1; }
 
-        // na krizovatce nahodne vyber novy smer
-        if (id != v.LastNode && MathF.Abs(Vector2.Dot(v.Pos - node, d)) < 10 && Vector2.Distance(v.Pos, node) < 45)
+        Vector2 node = world.Nodes[v.LastNode];
+        var toNode = node - v.Pos;
+
+        // dojel k cilovemu uzlu -> vyber dalsi hranu (radeji rovne, bez otoceni zpet)
+        if (toNode.Length() < 42)
         {
-            v.LastNode = id;
-            var options = new List<int>();
-            for (int nd = 0; nd < 4; nd++)
+            var nbrs = world.Adj[v.LastNode];
+            var fwd0 = v.Forward;
+            int best = -1; float bestScore = -999f;
+            foreach (var nb in nbrs)
             {
-                if (nd == (v.Dir + 2) % 4) continue;
-                int ti = ni + (int)Dirs[nd].X, tj = nj + (int)Dirs[nd].Y;
-                if (ti < 0 || tj < 0 || ti > World.Grid || tj > World.Grid) continue;
-                options.Add(nd);
-                if (nd == v.Dir) { options.Add(nd); options.Add(nd); }   // radeji rovne
+                if (nb == v.PrevNode && nbrs.Length > 1) continue;   // nevracej se
+                var dir = Vector2.Normalize(world.Nodes[nb] - node);
+                float score = Vector2.Dot(dir, fwd0) + Rnd(-0.25f, 0.25f);
+                if (score > bestScore) { bestScore = score; best = nb; }
             }
-            v.Dir = options.Count > 0 ? options[rnd.Next(options.Count)] : (v.Dir + 2) % 4;
+            if (best < 0) best = nbrs.Length > 0 ? nbrs[rnd.Next(nbrs.Length)] : world.NearestNode(v.Pos);
+            v.PrevNode = v.LastNode; v.LastNode = best;
+            node = world.Nodes[v.LastNode]; toNode = node - v.Pos;
         }
 
-        float target = v.Dir * MathF.PI / 2;
+        // natoc se k cilovemu uzlu, s odsazenim do praveho pruhu
+        var axis = toNode.LengthSquared() > 1 ? Vector2.Normalize(toNode) : v.Forward;
+        var right = new Vector2(-axis.Y, axis.X);
+        Vector2 aim = node + right * 16f;
+        float target = MathF.Atan2(aim.Y - v.Pos.Y, aim.X - v.Pos.X);
         float diff = AngleDiff(target, v.Angle);
         v.Angle += Math.Clamp(diff, -3.2f * dt, 3.2f * dt);
 
-        if (MathF.Abs(diff) < 0.35f)    // drz se v pravem jizdnim pruhu
-        {
-            var dd = Dirs[v.Dir];
-            var right = new Vector2(-dd.Y, dd.X);
-            if (dd.X != 0) v.Pos.Y += (node.Y + right.Y * 20 - v.Pos.Y) * MathF.Min(1, 4 * dt);
-            else v.Pos.X += (node.X + right.X * 20 - v.Pos.X) * MathF.Min(1, 4 * dt);
-        }
-
         // brzdi pred prekazkou
-        float want = 170f;
+        float want = 165f;
         var fwd = v.Forward;
         foreach (var o in vehicles)
         {
@@ -601,14 +599,18 @@ public partial class Game
             var rel = o.Pos - v.Pos;
             float ahead = Vector2.Dot(rel, fwd);
             float side = MathF.Abs(rel.X * fwd.Y - rel.Y * fwd.X);
-            if (ahead > 0 && ahead < 85 + v.Speed * 0.2f && side < 30) { want = 0; break; }
+            if (ahead > 0 && ahead < 85 + v.Speed * 0.2f && side < 28) { want = 0; break; }
         }
         if (want == 0) v.StuckT += dt; else v.StuckT = 0;
 
+        if (MathF.Abs(diff) > 1.0f) want = MathF.Min(want, 70f);   // zpomal v zatacce
         if (v.Speed < want) v.Speed = MathF.Min(want, v.Speed + 260 * dt);
         else v.Speed = MathF.Max(want, v.Speed - 700 * dt);
 
-        if (v.StuckT > 3.5f) { v.Dir = (v.Dir + 2) % 4; v.StuckT = 0; v.LastNode = -1; }   // otoc se
+        if (v.StuckT > 3.5f)    // zaseknute - preskoc na nejblizsi uzel a jed jinam
+        {
+            v.LastNode = world.NearestNode(v.Pos); v.PrevNode = -1; v.StuckT = 0;
+        }
     }
 
     void UpdateChaseAi(Vehicle v, float dt)
@@ -973,7 +975,7 @@ public partial class Game
 
             bool hit = false;
 
-            if (b.Life <= 0 || b.Pos.X < 0 || b.Pos.Y < 0 || b.Pos.X > World.Size || b.Pos.Y > World.Size ||
+            if (b.Life <= 0 || b.Pos.X < 0 || b.Pos.Y < 0 || b.Pos.X > world.WPx || b.Pos.Y > world.HPx ||
                 world.PointInBuilding(b.Pos))
                 hit = true;
 
@@ -1159,9 +1161,7 @@ public partial class Game
     {
         var fdir = car != null && MathF.Abs(car.Speed) > 30 ? car.Forward : DirOf(pAngle);
         var target = pPos + fdir * 650;
-        int ni = Math.Clamp((int)MathF.Round((target.X - World.Road / 2) / World.Cell), 0, World.Grid);
-        int nj = Math.Clamp((int)MathF.Round((target.Y - World.Road / 2) / World.Cell), 0, World.Grid);
-        var node = World.Node(ni, nj);
+        var node = world.Nodes[world.NearestNode(target)];
         if (Vector2.Distance(node, pPos) < 320) return;
 
         var across = new Vector2(-fdir.Y, fdir.X);
@@ -1270,10 +1270,10 @@ public partial class Game
     /// <summary>Nahodny uzel mrizky ve vzdalenosti min..max od bodu.</summary>
     Vector2 PickNode(Vector2 from, float min, float max)
     {
-        var n = World.Node(rnd.Next(World.Grid + 1), rnd.Next(World.Grid + 1));
+        var n = world.RandomRoadPoint(rnd);
         for (int i = 0; i < 40; i++)
         {
-            n = World.Node(rnd.Next(World.Grid + 1), rnd.Next(World.Grid + 1));
+            n = world.RandomRoadPoint(rnd);
             float d = Vector2.Distance(n, from);
             if (d > min && d < max) break;
         }
@@ -1724,15 +1724,12 @@ public partial class Game
                 Raylib.Fade(new Color(8, 12, 38, 255), night * 0.62f));
 
             var lamp = new Color(255, 220, 150, 255);
-            int i0 = Math.Max(0, (int)(vx0 / World.Cell)), i1 = Math.Min(World.Grid, (int)(vx1 / World.Cell) + 1);
-            int j0 = Math.Max(0, (int)(vy0 / World.Cell)), j1 = Math.Min(World.Grid, (int)(vy1 / World.Cell) + 1);
-            for (int i = i0; i <= i1; i++)
-                for (int j = j0; j <= j1; j++)
-                {
-                    var n = World.Node(i, j);
-                    Raylib.DrawCircleV(n, 70, Raylib.Fade(lamp, night * 0.16f));
-                    Raylib.DrawCircleV(n, 6, Raylib.Fade(lamp, night * 0.9f));
-                }
+            foreach (var n in world.Nodes)
+            {
+                if (n.X < vx0 || n.X > vx1 || n.Y < vy0 || n.Y > vy1) continue;
+                Raylib.DrawCircleV(n, 70, Raylib.Fade(lamp, night * 0.16f));
+                Raylib.DrawCircleV(n, 6, Raylib.Fade(lamp, night * 0.9f));
+            }
         }
 
         foreach (var tm in tireMarks)
@@ -2570,128 +2567,116 @@ public partial class Game
 
     void DrawMinimap()
     {
-        int size = 180, mx = W - size - 14, my = H - size - 40;
-        float s = size / World.Size;
+        int boxW = 210, boxH = (int)MathF.Round(boxW * world.HPx / world.WPx);
+        int mx = W - boxW - 14, my = H - boxH - 40;
+        float sx = boxW / world.WPx, sy = boxH / world.HPx;
 
-        Raylib.DrawRectangle(mx - 3, my - 3, size + 6, size + 6, Pal.Black);
-        Raylib.DrawRectangle(mx, my, size, size, Pal.MapBg);
-        foreach (var pk in world.Parks)
-            Raylib.DrawRectangle(mx + (int)(pk.X * s), my + (int)(pk.Y * s),
-                Math.Max(1, (int)(pk.Width * s)), Math.Max(1, (int)(pk.Height * s)), Pal.Park);
-        foreach (var b in world.Buildings)
-            Raylib.DrawRectangle(mx + (int)(b.X * s), my + (int)(b.Y * s),
-                Math.Max(1, (int)(b.Width * s)), Math.Max(1, (int)(b.Height * s)), Pal.Gray);
+        Raylib.DrawRectangle(mx - 3, my - 3, boxW + 6, boxH + 6, Pal.Black);
+        var mt = Assets.Get(World.MapTex);
+        if (mt.Id != 0)
+            Raylib.DrawTexturePro(mt, new Rectangle(0, 0, mt.Width, mt.Height),
+                new Rectangle(mx, my, boxW, boxH), Vector2.Zero, 0, Pal.White);
+        else
+            Raylib.DrawRectangle(mx, my, boxW, boxH, Pal.MapBg);
+
+        void Dot(Vector2 p, int rad, Color c) => Raylib.DrawCircle(mx + (int)(p.X * sx), my + (int)(p.Y * sy), rad, c);
 
         if (QuestPoint() is Vector2 qMini)
-            Raylib.DrawCircle(mx + (int)(qMini.X * s), my + (int)(qMini.Y * s), 5,
-                quest!.Type == QType.Assassinate ? Pal.Red : Pal.Yellow);
+            Dot(qMini, 5, quest!.Type == QType.Assassinate ? Pal.Red : Pal.Yellow);
 
         if (Stars > 0)
         {
             foreach (var v in vehicles)
                 if (v.State == VState.Alive && v.Kind != VKind.Civil && !v.PlayerDriven)
-                    Raylib.DrawCircle(mx + (int)(v.Pos.X * s), my + (int)(v.Pos.Y * s), 3, v.Kind == VKind.Tank ? Pal.Red : Pal.Blue);
+                    Dot(v.Pos, 3, v.Kind == VKind.Tank ? Pal.Red : Pal.Blue);
             foreach (var p in people)
-                if (!p.Dead && p.Kind != PKind.Civil)
-                    Raylib.DrawCircle(mx + (int)(p.Pos.X * s), my + (int)(p.Pos.Y * s), 2, Pal.Blue);
-            if (heli != null)
-                Raylib.DrawCircle(mx + (int)(heli.Pos.X * s), my + (int)(heli.Pos.Y * s), 3, Pal.Red);
+                if (!p.Dead && p.Kind != PKind.Civil) Dot(p.Pos, 2, Pal.Blue);
+            if (heli != null) Dot(heli.Pos, 3, Pal.Red);
         }
 
-        float vw = W / cam.Zoom * s, vh = H / cam.Zoom * s;
-        Raylib.BeginScissorMode(mx, my, size, size);
-        Raylib.DrawRectangleLines(mx + (int)(cam.Target.X * s - vw / 2), my + (int)(cam.Target.Y * s - vh / 2),
-            (int)vw, (int)vh, Raylib.Fade(Pal.White, 0.5f));
+        float vw = W / cam.Zoom * sx, vh = H / cam.Zoom * sy;
+        Raylib.BeginScissorMode(mx, my, boxW, boxH);
+        Raylib.DrawRectangleLines(mx + (int)(cam.Target.X * sx - vw / 2), my + (int)(cam.Target.Y * sy - vh / 2),
+            (int)vw, (int)vh, Raylib.Fade(Pal.White, 0.6f));
         Raylib.EndScissorMode();
 
-        Raylib.DrawCircle(mx + (int)(spray.X * s), my + (int)(spray.Y * s), 4, new Color(255, 90, 180, 255));
-        Raylib.DrawCircle(mx + (int)(world.BankDoor.X * s), my + (int)(world.BankDoor.Y * s), 4, new Color(240, 200, 60, 255));
-        Raylib.DrawCircle(mx + (int)(world.HospitalDoor.X * s), my + (int)(world.HospitalDoor.Y * s), 4, new Color(250, 110, 110, 255));
-        Raylib.DrawCircle(mx + (int)(world.SafehouseDoor.X * s), my + (int)(world.SafehouseDoor.Y * s), 4, new Color(110, 220, 150, 255));
-        Raylib.DrawCircle(mx + (int)(world.GunShopDoor.X * s), my + (int)(world.GunShopDoor.Y * s), 4, new Color(255, 170, 80, 255));
-        Raylib.DrawCircle(mx + (int)(world.StoreDoor.X * s), my + (int)(world.StoreDoor.Y * s), 4, new Color(120, 220, 230, 255));
-        Raylib.DrawCircle(mx + (int)(world.GasDoor.X * s), my + (int)(world.GasDoor.Y * s), 4, new Color(255, 110, 110, 255));
-        Raylib.DrawCircle(mx + (int)(world.VillaDoor.X * s), my + (int)(world.VillaDoor.Y * s), 4, new Color(200, 160, 255, 255));
+        Dot(spray, 4, new Color(255, 90, 180, 255));
+        Dot(world.BankDoor, 4, new Color(240, 200, 60, 255));
+        Dot(world.HospitalDoor, 4, new Color(250, 110, 110, 255));
+        Dot(world.SafehouseDoor, 4, new Color(110, 220, 150, 255));
+        Dot(world.GunShopDoor, 4, new Color(255, 170, 80, 255));
+        Dot(world.StoreDoor, 4, new Color(120, 220, 230, 255));
+        Dot(world.GasDoor, 4, new Color(255, 110, 110, 255));
+        Dot(world.VillaDoor, 4, new Color(200, 160, 255, 255));
         float pa = (car != null ? car.Angle : pAngle) * RadToDeg;
-        Raylib.DrawPoly(new Vector2(mx + pPos.X * s, my + pPos.Y * s), 3, 6, pa, Pal.White);
+        Raylib.DrawPoly(new Vector2(mx + pPos.X * sx, my + pPos.Y * sy), 3, 6, pa, Pal.White);
         Txt("M = velka mapa", mx, my - 20, 14, Pal.White);
     }
 
     void DrawBigMap()
     {
-        Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(Pal.Black, 0.72f));
-        int size = 620, mx = W / 2 - size / 2, my = H / 2 - size / 2 + 8;
-        float s = size / World.Size;
-        float bs = World.Cell - World.Road;
+        Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(Pal.Black, 0.78f));
+        int boxW = 760, boxH = (int)MathF.Round(760 * world.HPx / world.WPx);
+        int mx = 60, my = H / 2 - boxH / 2 + 10;
+        float sx = (float)boxW / world.WPx, sy = (float)boxH / world.HPx;
         var gold = new Color(240, 200, 60, 255);
         var pink = new Color(255, 90, 180, 255);
         var hred = new Color(250, 110, 110, 255);
         var sgreen = new Color(110, 220, 150, 255);
-
-        void R(Rectangle r, Color c) => Raylib.DrawRectangle(mx + (int)(r.X * s), my + (int)(r.Y * s),
-            Math.Max(1, (int)(r.Width * s)), Math.Max(1, (int)(r.Height * s)), c);
-
-        Raylib.DrawRectangleRounded(new Rectangle(mx - 6, my - 6, size + 12, size + 12), 0.02f, 6, Pal.Yellow);
-        Raylib.DrawRectangle(mx, my, size, size, new Color(56, 56, 62, 255));
-
-        for (int i = 0; i < World.Grid; i++)
-            for (int j = 0; j < World.Grid; j++)
-                R(new Rectangle(i * World.Cell + World.Road, j * World.Cell + World.Road, bs + 3, bs + 3), new Color(96, 96, 94, 255));
-        foreach (var pk in world.Parks) R(pk, Pal.Park);
-        foreach (var b in world.Buildings) R(b, new Color(128, 128, 134, 255));
         var gorange = new Color(255, 170, 80, 255);
         var scyan = new Color(120, 220, 230, 255);
         var gasred = new Color(255, 110, 110, 255);
         var vpurple = new Color(200, 160, 255, 255);
-        R(world.Bank, gold);
-        R(world.Garage, pink);
-        R(world.Hospital, hred);
-        R(world.Safehouse, sgreen);
-        R(world.GunShop, gorange);
-        R(world.Store, scyan);
-        R(world.Gas, gasred);
-        R(world.Villa, vpurple);
 
-        // souradnice ulic
-        for (int k = 0; k <= World.Grid; k++)
+        Raylib.DrawRectangleRounded(new Rectangle(mx - 6, my - 6, boxW + 12, boxH + 12), 0.02f, 6, Pal.Yellow);
+        var mt = Assets.Get(World.MapTex);
+        if (mt.Id != 0)
+            Raylib.DrawTexturePro(mt, new Rectangle(0, 0, mt.Width, mt.Height),
+                new Rectangle(mx, my, boxW, boxH), Vector2.Zero, 0, Pal.White);
+        else
+            Raylib.DrawRectangle(mx, my, boxW, boxH, new Color(56, 56, 62, 255));
+
+        void Dot(Vector2 p, int rad, Color c)
         {
-            float c = k * World.Cell + World.Road / 2;
-            Txt(((char)('A' + k)).ToString(), mx + (int)(c * s) - 5, my - 24, 16, Pal.White);
-            Txt((k + 1).ToString(), mx - 18, my + (int)(c * s) - 8, 16, Pal.White);
+            Raylib.DrawCircle(mx + (int)(p.X * sx), my + (int)(p.Y * sy), rad, c);
+            Raylib.DrawCircleLines(mx + (int)(p.X * sx), my + (int)(p.Y * sy), rad, Raylib.Fade(Pal.Black, 0.6f));
         }
-
-        string bl = "BANKA", gl = "LAKOVNA";
-        Txt(bl, mx + (int)((world.Bank.X + world.Bank.Width / 2) * s) - Raylib.MeasureText(bl, 14) / 2,
-            my + (int)((world.Bank.Y + world.Bank.Height / 2) * s) - 7, 14, Pal.Black);
-        Txt(gl, mx + (int)((world.Garage.X + world.Garage.Width / 2) * s) - Raylib.MeasureText(gl, 14) / 2,
-            my + (int)((world.Garage.Y + world.Garage.Height / 2) * s) - 7, 14, Pal.Black);
+        void Mark(Vector2 door, string lbl, Color c)
+        {
+            Dot(door, 6, c);
+            int tw = Raylib.MeasureText(lbl, 12);
+            int tx = mx + (int)(door.X * sx) - tw / 2, ty = my + (int)(door.Y * sy) - 20;
+            Raylib.DrawText(lbl, tx + 1, ty + 1, 12, Raylib.Fade(Pal.Black, 0.8f));
+            Raylib.DrawText(lbl, tx, ty, 12, Pal.White);
+        }
+        Mark(world.BankDoor, "BANKA", gold);
+        Mark(world.GarageDoor, "LAKOVNA", pink);
+        Mark(world.HospitalDoor, "NEMOCNICE", hred);
+        Mark(world.SafehouseDoor, "UKRYT", sgreen);
+        Mark(world.GunShopDoor, "ZBROJNICE", gorange);
+        Mark(world.StoreDoor, "VECERKA", scyan);
+        Mark(world.GasDoor, "BENZINKA", gasred);
+        Mark(world.VillaDoor, "VILA", vpurple);
 
         if (QuestPoint() is Vector2 qBig)
-        {
-            Raylib.DrawCircle(mx + (int)(qBig.X * s), my + (int)(qBig.Y * s), 8,
-                quest!.Type == QType.Assassinate ? Pal.Red : Pal.Yellow);
-            Raylib.DrawCircleLines(mx + (int)(qBig.X * s), my + (int)(qBig.Y * s), 8, Pal.Black);
-        }
+            Dot(qBig, 8, quest!.Type == QType.Assassinate ? Pal.Red : Pal.Yellow);
 
         if (Stars > 0)
         {
             foreach (var v in vehicles)
                 if (v.State == VState.Alive && v.Kind != VKind.Civil && !v.PlayerDriven)
-                    Raylib.DrawCircle(mx + (int)(v.Pos.X * s), my + (int)(v.Pos.Y * s), 5, v.Kind == VKind.Tank ? Pal.Red : Pal.Blue);
+                    Dot(v.Pos, 5, v.Kind == VKind.Tank ? Pal.Red : Pal.Blue);
             foreach (var p in people)
                 if (!p.Dead && p.Kind != PKind.Civil)
-                    Raylib.DrawCircle(mx + (int)(p.Pos.X * s), my + (int)(p.Pos.Y * s), 3, p.Kind == PKind.Soldier ? Pal.Red : Pal.Blue);
+                    Dot(p.Pos, 3, p.Kind == PKind.Soldier ? Pal.Red : Pal.Blue);
         }
 
         float pa = (car != null ? car.Angle : pAngle) * RadToDeg;
-        Raylib.DrawPoly(new Vector2(mx + pPos.X * s, my + pPos.Y * s), 3, 10, pa, Pal.White);
+        Raylib.DrawPoly(new Vector2(mx + pPos.X * sx, my + pPos.Y * sy), 3, 10, pa, Pal.White);
 
-        int ni = Math.Clamp((int)MathF.Round((pPos.X - World.Road / 2) / World.Cell), 0, World.Grid);
-        int nj = Math.Clamp((int)MathF.Round((pPos.Y - World.Road / 2) / World.Cell), 0, World.Grid);
-        Txt("MAPA MESTA", mx, my - 56, 28, Pal.Yellow);
-        Txt($"Poloha: {(char)('A' + ni)}{nj + 1}", mx + 240, my - 50, 20, Pal.White);
+        Txt("MAPA MESTA - CHAOS CITY", mx, my - 44, 28, Pal.Yellow);
 
-        int lx = mx + size + 28, ly = my + 10;
+        int lx = mx + boxW + 28, ly = my + 10;
         (string, Color)[] legend =
         {
             ("Ty", Pal.White), ("Banka (E = vykrast)", gold), ("Lakovna (zajed autem)", pink),
@@ -2705,7 +2690,7 @@ public partial class Game
             Raylib.DrawRectangle(lx, ly + i * 30 + 3, 16, 16, legend[i].Item2);
             Txt(legend[i].Item1, lx + 26, ly + i * 30, 20, Pal.White);
         }
-        Txt("M / ESC = zavrit", mx, my + size + 14, 16, Pal.Gray);
+        Txt("M / ESC = zavrit", mx, my + boxH + 14, 16, Pal.Gray);
     }
 
     void DrawShop()

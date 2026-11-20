@@ -1,160 +1,304 @@
 using System.Numerics;
+using System.Text.Json;
 using Raylib_cs;
 
 namespace Z04;
 
-/// <summary>Mesto: mrizka silnic (Grid+1 x Grid+1), mezi nimi bloky s budovami nebo parkem.</summary>
+/// <summary>
+/// Mesto nactene z rucne navrzene mapy (assets/07_svet/mapa/chaoscity_map.json).
+/// Silnice, bloky budov a graf krizovatek se generuji ze souradnic dlazdic,
+/// takze svet presne odpovida vyrenderovanemu PNG (chaoscity_map_4096.png).
+/// </summary>
 public class World
 {
-    public const int Grid = 12;
-    public const float Cell = 500f;
-    public const float Road = 140f;
-    public const float Size = Grid * Cell + Road;
+    public const float Tile = 140f;         // hernich jednotek na dlazdici (mapa 64x48 dlazdic)
+    public float WPx = 64 * Tile, HPx = 48 * Tile;
+    public float Size => MathF.Max(WPx, HPx);   // kompat. pro ctvercove meze
+    public const string MapTex = "07_svet/mapa/chaoscity_map_4096.png";
 
-    public readonly List<Rectangle> Buildings = new();
+    public readonly List<Rectangle> Roads = new();        // pro OnRoad a spawn
+    public readonly List<Rectangle> Buildings = new();    // kolize
     public readonly List<Color> BuildingColors = new();
     public readonly List<Rectangle> Parks = new();
-    // rozsvicena okna v noci: pro kazdou budovu seznam oken (lokalni pozice v ramci budovy)
-    public readonly List<List<Rectangle>> Windows = new();
 
-    // specialni budovy: lakovna, banka, nemocnice, ukryt, zbrojnice, vecerka, benzinka, vila
+    // graf silnic (uzly = krizovatky/konce, hrany podel silnic) - pro AI a questy
+    public readonly List<Vector2> Nodes = new();
+    public readonly List<int[]> Adj = new();
+
+    // specialni budovy
     public Rectangle Garage, Bank, Hospital, Safehouse, GunShop, Store, Gas, Villa;
     public Vector2 GarageDoor, BankDoor, HospitalDoor, SafehouseDoor, GunShopDoor, StoreDoor, GasDoor, VillaDoor;
-    public const int GarageI = 1, GarageJ = 6, BankI = 6, BankJ = 2,
-                     HospI = 9, HospJ = 9, SafeI = 3, SafeJ = 10,
-                     GunI = 10, GunJ = 4, StoreI = 4, StoreJ = 3,
-                     GasI = 8, GasJ = 7, VillaI = 10, VillaJ = 1;
+    public Vector2 Spawn;
 
-    // dekorace strech (nemeni kolize)
-    readonly List<List<(Rectangle R, int Kind)>> _roofDetails = new();
-    readonly Random _deco;
+    public float Night, Wet;
 
-    public float Night;   // 0 = den, 1 = plna noc (nastavuje Game kazdy snimek)
-    public float Wet;     // 0 = sucho, 1 = mokra vozovka (dest)
+    // pomocne segmenty silnic (v dlazdicich) pro generovani
+    struct Seg { public float X0, Y0, X1, Y1, W; public bool Vert; }
+    readonly List<Seg> _segs = new();
 
     public World(int seed)
     {
         var r = new Random(seed);
-        _deco = new Random(seed + 7919); // oddeleny generator - rozlozeni mesta zustava stejne
-        const float pad = 22f, gap = 24f;
-        float bs = Cell - Road;
+        try { Build(r); }
+        catch { BuildFallback(r); }
+        if (Nodes.Count == 0) BuildFallback(r);
+        Spawn = Nodes[NearestNode(new Vector2(WPx * 0.47f, HPx * 0.55f))];
+    }
 
-        for (int i = 0; i < Grid; i++)
+    // ------------------------------------------------------------ nacteni + generovani
+
+    static float F(float t) => t * Tile;
+
+    void Build(Random r)
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "assets", "07_svet", "mapa", "chaoscity_map.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var root = doc.RootElement;
+
+        // silnice
+        foreach (var rd in root.GetProperty("roads").EnumerateArray())
         {
-            for (int j = 0; j < Grid; j++)
-            {
-                float bx = i * Cell + Road, by = j * Cell + Road;
-                double roll = r.NextDouble();
+            var f = rd.GetProperty("from"); var t = rd.GetProperty("to");
+            float x0 = f[0].GetSingle(), y0 = f[1].GetSingle(), x1 = t[0].GetSingle(), y1 = t[1].GetSingle();
+            float w = rd.GetProperty("widthTiles").GetSingle();
+            bool vert = MathF.Abs(x0 - x1) < MathF.Abs(y0 - y1);
+            _segs.Add(new Seg { X0 = x0, Y0 = y0, X1 = x1, Y1 = y1, W = w, Vert = vert });
 
-                if (roll < 0.15)
+            float hw = w / 2f;
+            Rectangle rect = vert
+                ? new Rectangle(F(x0 - hw), F(MathF.Min(y0, y1)), F(w), F(MathF.Abs(y1 - y0)))
+                : new Rectangle(F(MathF.Min(x0, x1)), F(y0 - hw), F(MathF.Abs(x1 - x0)), F(w));
+            Roads.Add(rect);
+        }
+
+        BuildGraph();
+
+        // POI pozice (dlazdice)
+        var pois = new Dictionary<string, Vector2>();
+        Vector2? firstGas = null;
+        foreach (var p in root.GetProperty("pois").EnumerateArray())
+        {
+            string id = p.GetProperty("id").GetString() ?? "";
+            var pos = p.GetProperty("pos");
+            var v = new Vector2(F(pos[0].GetSingle()), F(pos[1].GetSingle()));
+            if (id == "gas") { firstGas ??= v; }
+            else pois[id] = v;
+            string? name = p.GetProperty("name").GetString();
+            if (name == "Centrální park" || name == "Park")
+                Parks.Add(new Rectangle(v.X - F(1.6f), v.Y - F(1.6f), F(3.2f), F(3.2f)));
+        }
+
+        // kolizni bloky mezi silnicemi (po ctvrtich)
+        BuildBlocks(root, pois, firstGas);
+
+        // specialni budovy na POI
+        Bank = MakeSpecial(pois.GetValueOrDefault("bank", new Vector2(F(34), F(18))), new Color(196, 160, 60, 255), out BankDoor);
+        Hospital = MakeSpecial(pois.GetValueOrDefault("hosp", new Vector2(F(30), F(30))), new Color(210, 70, 70, 255), out HospitalDoor);
+        GunShop = MakeSpecial(pois.GetValueOrDefault("gun", new Vector2(F(13.3f), F(41.4f))), new Color(150, 90, 50, 255), out GunShopDoor);
+        Store = MakeSpecial(pois.GetValueOrDefault("store", new Vector2(F(14.8f), F(41.4f))), new Color(60, 150, 160, 255), out StoreDoor);
+        Safehouse = MakeSpecial(pois.GetValueOrDefault("safe", new Vector2(F(21), F(41))), new Color(70, 150, 90, 255), out SafehouseDoor);
+        Villa = MakeSpecial(pois.GetValueOrDefault("villa", new Vector2(F(28.6f), F(6.4f))), new Color(150, 110, 200, 255), out VillaDoor);
+        Gas = MakeSpecial(firstGas ?? new Vector2(F(51.5f), F(14.4f)), new Color(200, 60, 60, 255), out GasDoor);
+        Garage = MakeSpecial(pois.GetValueOrDefault("police", new Vector2(F(41.9f), F(30))) + new Vector2(F(2.4f), 0), new Color(200, 70, 150, 255), out GarageDoor);
+    }
+
+    // graf: uzly v koncich a prusecich segmentu, hrany podel segmentu
+    void BuildGraph()
+    {
+        var map = new Dictionary<(int, int), int>();
+        int NodeAt(float px, float py)
+        {
+            var key = ((int)MathF.Round(px / 6f), (int)MathF.Round(py / 6f));
+            if (map.TryGetValue(key, out int idx)) return idx;
+            idx = Nodes.Count; Nodes.Add(new Vector2(px, py)); map[key] = idx; return idx;
+        }
+
+        // pro kazdy segment seznam bodu (v dlazdicich) lezicich na nem
+        var onSeg = new List<List<float>>();
+        for (int i = 0; i < _segs.Count; i++)
+        {
+            var s = _segs[i];
+            var pts = new List<float> { s.Vert ? MathF.Min(s.Y0, s.Y1) : MathF.Min(s.X0, s.X1),
+                                        s.Vert ? MathF.Max(s.Y0, s.Y1) : MathF.Max(s.X0, s.X1) };
+            onSeg.Add(pts);
+        }
+
+        // pruseciky kolmych segmentu
+        for (int i = 0; i < _segs.Count; i++)
+            for (int j = i + 1; j < _segs.Count; j++)
+            {
+                var a = _segs[i]; var b = _segs[j];
+                if (a.Vert == b.Vert) continue;
+                var v = a.Vert ? a : b; var h = a.Vert ? b : a;
+                float vx = v.X0, hy = h.Y0;
+                if (vx >= MathF.Min(h.X0, h.X1) - 0.05f && vx <= MathF.Max(h.X0, h.X1) + 0.05f &&
+                    hy >= MathF.Min(v.Y0, v.Y1) - 0.05f && hy <= MathF.Max(v.Y0, v.Y1) + 0.05f)
                 {
-                    Parks.Add(new Rectangle(bx + pad, by + pad, bs - 2 * pad, bs - 2 * pad));
+                    onSeg[a.Vert ? i : j].Add(hy);  // vertical seg: pridej y
+                    onSeg[a.Vert ? j : i].Add(vx);  // horizontal seg: pridej x
                 }
-                else if (roll < 0.55)
+            }
+
+        // uzly + hrany podel kazdeho segmentu
+        var adjSet = new Dictionary<int, HashSet<int>>();
+        void Link(int n1, int n2)
+        {
+            if (n1 == n2) return;
+            if (!adjSet.TryGetValue(n1, out var s1)) adjSet[n1] = s1 = new();
+            if (!adjSet.TryGetValue(n2, out var s2)) adjSet[n2] = s2 = new();
+            s1.Add(n2); s2.Add(n1);
+        }
+        for (int i = 0; i < _segs.Count; i++)
+        {
+            var s = _segs[i];
+            var pts = onSeg[i];
+            pts.Sort();
+            int prev = -1;
+            float lastVal = float.NaN;
+            foreach (var val in pts)
+            {
+                if (!float.IsNaN(lastVal) && MathF.Abs(val - lastVal) < 0.03f) continue;
+                lastVal = val;
+                int id = s.Vert ? NodeAt(F(s.X0), F(val)) : NodeAt(F(val), F(s.Y0));
+                if (prev >= 0) Link(prev, id);
+                prev = id;
+            }
+        }
+
+        for (int i = 0; i < Nodes.Count; i++)
+            Adj.Add(adjSet.TryGetValue(i, out var set) ? set.ToArray() : Array.Empty<int>());
+    }
+
+    void BuildBlocks(JsonElement root, Dictionary<string, Vector2> pois, Vector2? firstGas)
+    {
+        const float margin = 0.26f, minCell = 0.8f, maxCell = 5.6f;
+        var specials = new List<Vector2>(pois.Values);
+        if (firstGas is Vector2 g) specials.Add(g);
+        var parksT = new List<Vector2>();
+        foreach (var pk in Parks) parksT.Add(new Vector2((pk.X + pk.Width / 2) / Tile, (pk.Y + pk.Height / 2) / Tile));
+
+        foreach (var d in root.GetProperty("districts").EnumerateArray())
+        {
+            string name = d.GetProperty("name").GetString() ?? "";
+            if (name.Contains("Pláž")) continue;    // more/plaz - bez budov
+            var rc = d.GetProperty("rect");
+            float dx = rc[0].GetSingle(), dy = rc[1].GetSingle(), dw = rc[2].GetSingle(), dh = rc[3].GetSingle();
+
+            var xs = new SortedSet<float> { dx, dx + dw };
+            var ys = new SortedSet<float> { dy, dy + dh };
+            foreach (var s in _segs)
+            {
+                if (s.Vert)
                 {
-                    if (r.Next(2) == 0)
-                    {
-                        float w = (bs - 2 * pad - gap) / 2;
-                        AddBuilding(r, bx + pad, by + pad, w, bs - 2 * pad);
-                        AddBuilding(r, bx + pad + w + gap, by + pad, w, bs - 2 * pad);
-                    }
-                    else
-                    {
-                        float h = (bs - 2 * pad - gap) / 2;
-                        AddBuilding(r, bx + pad, by + pad, bs - 2 * pad, h);
-                        AddBuilding(r, bx + pad, by + pad + h + gap, bs - 2 * pad, h);
-                    }
+                    if (s.X0 >= dx - 0.1f && s.X0 <= dx + dw + 0.1f &&
+                        !(MathF.Max(s.Y0, s.Y1) < dy || MathF.Min(s.Y0, s.Y1) > dy + dh))
+                    { xs.Add(s.X0 - s.W / 2); xs.Add(s.X0 + s.W / 2); }
                 }
                 else
                 {
-                    AddBuilding(r, bx + pad, by + pad, bs - 2 * pad, bs - 2 * pad);
+                    if (s.Y0 >= dy - 0.1f && s.Y0 <= dy + dh + 0.1f &&
+                        !(MathF.Max(s.X0, s.X1) < dx || MathF.Min(s.X0, s.X1) > dx + dw))
+                    { ys.Add(s.Y0 - s.W / 2); ys.Add(s.Y0 + s.W / 2); }
                 }
             }
+            var xa = xs.ToList(); var ya = ys.ToList();
+            for (int i = 0; i < xa.Count - 1; i++)
+                for (int j = 0; j < ya.Count - 1; j++)
+                {
+                    float bx0 = xa[i] + margin, bx1 = xa[i + 1] - margin;
+                    float by0 = ya[j] + margin, by1 = ya[j + 1] - margin;
+                    float cw = bx1 - bx0, ch = by1 - by0;
+                    if (cw < minCell || ch < minCell) continue;
+                    if (cw > maxCell || ch > maxCell) continue;   // velke plochy nechat prujezdne
+                    float cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
+                    bool nearSpecial = specials.Any(s => MathF.Abs(cx - s.X / Tile) < 1.6f && MathF.Abs(cy - s.Y / Tile) < 1.6f);
+                    bool nearPark = parksT.Any(p => MathF.Abs(cx - p.X) < 2.2f && MathF.Abs(cy - p.Y) < 2.2f);
+                    if (nearSpecial || nearPark) continue;
+                    Buildings.Add(new Rectangle(F(bx0), F(by0), F(cw), F(ch)));
+                    BuildingColors.Add(Pal.Roofs[(i * 7 + j * 3) % Pal.Roofs.Length]);
+                }
         }
-
-        Garage = MakeSpecial(r, GarageI, GarageJ, new Color(200, 70, 150, 255), out GarageDoor);
-        Bank = MakeSpecial(r, BankI, BankJ, new Color(196, 160, 60, 255), out BankDoor);
-        Hospital = MakeSpecial(r, HospI, HospJ, new Color(210, 70, 70, 255), out HospitalDoor);
-        Safehouse = MakeSpecial(r, SafeI, SafeJ, new Color(70, 150, 90, 255), out SafehouseDoor);
-        GunShop = MakeSpecial(r, GunI, GunJ, new Color(150, 90, 50, 255), out GunShopDoor);
-        Store = MakeSpecial(r, StoreI, StoreJ, new Color(60, 150, 160, 255), out StoreDoor);
-        Gas = MakeSpecial(r, GasI, GasJ, new Color(200, 60, 60, 255), out GasDoor);
-        Villa = MakeSpecial(r, VillaI, VillaJ, new Color(150, 110, 200, 255), out VillaDoor);
     }
 
-    /// <summary>Nahradi obsah bloku jednou velkou budovou, dvere jsou na silnici nad ni.</summary>
-    Rectangle MakeSpecial(Random r, int i, int j, Color roof, out Vector2 door)
+    Rectangle MakeSpecial(Vector2 center, Color roof, out Vector2 door)
     {
-        const float pad = 22f;
-        float bs = Cell - Road;
-        float bx = i * Cell + Road, by = j * Cell + Road;
-
+        float w = F(2.0f), h = F(1.8f);
+        var rect = new Rectangle(center.X - w / 2, center.Y - h / 2, w, h);
+        // odstran kolizni bloky, ktere by se prekryvaly
         for (int k = Buildings.Count - 1; k >= 0; k--)
-        {
-            var b = Buildings[k];
-            if (b.X >= bx && b.X < bx + bs && b.Y >= by && b.Y < by + bs)
-            {
-                Buildings.RemoveAt(k); BuildingColors.RemoveAt(k); _roofDetails.RemoveAt(k); Windows.RemoveAt(k);
-            }
-        }
-        Parks.RemoveAll(pk => pk.X >= bx && pk.X < bx + bs && pk.Y >= by && pk.Y < by + bs);
-
-        var rect = new Rectangle(bx + pad, by + pad, bs - 2 * pad, bs - 2 * pad);
-        AddBuilding(r, rect.X, rect.Y, rect.Width, rect.Height);
-        BuildingColors[^1] = roof;
-        _roofDetails[^1].Clear();
-        door = new Vector2(bx + bs / 2, by - 40);
+            if (Overlap(Buildings[k], rect, 6f)) { Buildings.RemoveAt(k); BuildingColors.RemoveAt(k); }
+        Buildings.Add(rect);
+        BuildingColors.Add(roof);
+        // dvere na jizni strane, kousek ven
+        door = new Vector2(center.X, rect.Y + h + F(0.55f));
+        if (door.Y > HPx - 40) door = new Vector2(center.X, rect.Y - F(0.55f));
         return rect;
     }
 
-    void AddBuilding(Random r, float x, float y, float w, float h)
+    static bool Overlap(Rectangle a, Rectangle b, float pad) =>
+        a.X - pad < b.X + b.Width && a.X + a.Width + pad > b.X &&
+        a.Y - pad < b.Y + b.Height && a.Y + a.Height + pad > b.Y;
+
+    void BuildFallback(Random r)
     {
-        Buildings.Add(new Rectangle(x, y, w, h));
-        BuildingColors.Add(Pal.Roofs[r.Next(Pal.Roofs.Length)]);
-
-        var list = new List<(Rectangle, int)>();
-        int n = 2 + _deco.Next(4);
-        for (int k = 0; k < n; k++)
+        // nouzova sit 8x6 pokud JSON chybi
+        Nodes.Clear(); Adj.Clear(); Roads.Clear(); Buildings.Clear(); BuildingColors.Clear();
+        var map = new Dictionary<(int, int), int>();
+        for (int i = 0; i <= 8; i++) for (int j = 0; j <= 6; j++)
+        { map[(i, j)] = Nodes.Count; Nodes.Add(new Vector2(F(4 + i * 7), F(4 + j * 7))); }
+        for (int i = 0; i <= 8; i++) for (int j = 0; j <= 6; j++)
         {
-            int kind = _deco.Next(3); // 0 klimatizace, 1 svetlik, 2 komin
-            float sw = kind == 1 ? 34 : kind == 2 ? 16 : 26;
-            float sh = kind == 1 ? 26 : kind == 2 ? 16 : 22;
-            float rx = x + 24 + (float)_deco.NextDouble() * MathF.Max(1, w - 48 - sw);
-            float ry = y + 24 + (float)_deco.NextDouble() * MathF.Max(1, h - 48 - sh);
-            list.Add((new Rectangle(rx, ry, sw, sh), kind));
+            var nb = new List<int>();
+            if (i > 0) nb.Add(map[(i - 1, j)]); if (i < 8) nb.Add(map[(i + 1, j)]);
+            if (j > 0) nb.Add(map[(i, j - 1)]); if (j < 6) nb.Add(map[(i, j + 1)]);
+            Adj.Add(nb.ToArray());
         }
-        _roofDetails.Add(list);
-
-        // nahodna rozsvicena okna po obvodu strechy (sviti v noci)
-        var win = new List<Rectangle>();
-        for (float wx = x + 20; wx < x + w - 28; wx += 26)
-            for (float wy = y + 20; wy < y + h - 28; wy += 30)
-                if (_deco.NextDouble() < 0.35) win.Add(new Rectangle(wx, wy, 10, 12));
-        Windows.Add(win);
+        Bank = MakeSpecial(new Vector2(F(18), F(18)), new Color(196, 160, 60, 255), out BankDoor);
+        Hospital = MakeSpecial(new Vector2(F(32), F(25)), new Color(210, 70, 70, 255), out HospitalDoor);
+        GunShop = MakeSpecial(new Vector2(F(25), F(32)), new Color(150, 90, 50, 255), out GunShopDoor);
+        Store = MakeSpecial(new Vector2(F(39), F(18)), new Color(60, 150, 160, 255), out StoreDoor);
+        Safehouse = MakeSpecial(new Vector2(F(11), F(32)), new Color(70, 150, 90, 255), out SafehouseDoor);
+        Villa = MakeSpecial(new Vector2(F(46), F(11)), new Color(150, 110, 200, 255), out VillaDoor);
+        Gas = MakeSpecial(new Vector2(F(46), F(25)), new Color(200, 60, 60, 255), out GasDoor);
+        Garage = MakeSpecial(new Vector2(F(18), F(39)), new Color(200, 70, 150, 255), out GarageDoor);
     }
 
-    public static Vector2 Node(int i, int j) => new(i * Cell + Road / 2, j * Cell + Road / 2);
-    public static int NodeId(int i, int j) => j * (Grid + 1) + i;
+    // ------------------------------------------------------------ graf helpery
+
+    public int NearestNode(Vector2 p)
+    {
+        int best = 0; float bd = float.MaxValue;
+        for (int i = 0; i < Nodes.Count; i++)
+        {
+            float d = Vector2.DistanceSquared(Nodes[i], p);
+            if (d < bd) { bd = d; best = i; }
+        }
+        return best;
+    }
+
+    public Vector2 RandomRoadPoint(Random r) => Nodes[r.Next(Nodes.Count)];
+
+    // ------------------------------------------------------------ dotazy
 
     public bool OnRoad(Vector2 p)
     {
-        if (p.X < 0 || p.Y < 0 || p.X > Size || p.Y > Size) return false;
-        return p.X % Cell < Road || p.Y % Cell < Road;
+        if (p.X < 0 || p.Y < 0 || p.X > WPx || p.Y > HPx) return false;
+        foreach (var rd in Roads)
+            if (p.X >= rd.X && p.X <= rd.X + rd.Width && p.Y >= rd.Y && p.Y <= rd.Y + rd.Height) return true;
+        return false;
     }
 
     public bool PointInBuilding(Vector2 p)
     {
         foreach (var b in Buildings)
-            if (p.X >= b.X && p.X <= b.X + b.Width && p.Y >= b.Y && p.Y <= b.Y + b.Height)
-                return true;
+            if (p.X >= b.X && p.X <= b.X + b.Width && p.Y >= b.Y && p.Y <= b.Y + b.Height) return true;
         return false;
     }
 
-    /// <summary>Vytlaci kruh (stred c, polomer r) z budov a z hranic sveta. Vraci celkovy posun.</summary>
+    /// <summary>Vytlaci kruh (stred c, polomer r) z budov a z hranic sveta.</summary>
     public Vector2 Resolve(ref Vector2 c, float r)
     {
         Vector2 total = Vector2.Zero;
-
         foreach (var b in Buildings)
         {
             if (c.X < b.X - r - 1 || c.X > b.X + b.Width + r + 1 ||
@@ -165,7 +309,6 @@ public class World
             var d = new Vector2(c.X - cx, c.Y - cy);
             float len = d.Length();
             Vector2 push;
-
             if (len > 0.0001f)
             {
                 if (len >= r) continue;
@@ -173,7 +316,6 @@ public class World
             }
             else
             {
-                // stred uvnitr budovy - vytlacit nejblizsi stranou
                 float l = c.X - b.X, rt = b.X + b.Width - c.X;
                 float t = c.Y - b.Y, bt = b.Y + b.Height - c.Y;
                 float m = MathF.Min(MathF.Min(l, rt), MathF.Min(t, bt));
@@ -182,162 +324,51 @@ public class World
                 else if (m == t) push = new Vector2(0, -(t + r));
                 else push = new Vector2(0, bt + r);
             }
-
-            c += push;
-            total += push;
+            c += push; total += push;
         }
 
-        float min = r, max = Size - r;
-        if (c.X < min) { total.X += min - c.X; c.X = min; }
-        if (c.X > max) { total.X += max - c.X; c.X = max; }
-        if (c.Y < min) { total.Y += min - c.Y; c.Y = min; }
-        if (c.Y > max) { total.Y += max - c.Y; c.Y = max; }
-
+        float minX = r, maxX = WPx - r, minY = r, maxY = HPx - r;
+        if (c.X < minX) { total.X += minX - c.X; c.X = minX; }
+        if (c.X > maxX) { total.X += maxX - c.X; c.X = maxX; }
+        if (c.Y < minY) { total.Y += minY - c.Y; c.Y = minY; }
+        if (c.Y > maxY) { total.Y += maxY - c.Y; c.Y = maxY; }
         return total;
     }
 
+    // ------------------------------------------------------------ kresleni
+
     public void Draw(float x0, float y0, float x1, float y1)
     {
-        float bs = Cell - Road;
-        var curb = new Color(105, 105, 102, 255);
-        var edge = new Color(200, 200, 205, 120);
-        var zebra = new Color(235, 235, 235, 200);
-
-        // asfalt
-        var road = Pal.Road;
-        if (Wet > 0.01f)
+        var mt = Assets.Get(MapTex);
+        if (mt.Id != 0)
         {
-            // mokry asfalt je tmavsi a modrejsi
-            road = new Color((byte)(road.R + (34 - road.R) * 0.7f * Wet),
-                             (byte)(road.G + (40 - road.G) * 0.7f * Wet),
-                             (byte)(road.B + (54 - road.B) * 0.7f * Wet), (byte)255);
+            // PNG -> svet: png px = dlazdice * (sirka_png/64)
+            float pxPerTile = mt.Width / 64f;
+            float k = pxPerTile / Tile;                  // png px na jednu hernu jednotku
+            float sx0 = Math.Clamp(x0 * k, 0, mt.Width);
+            float sy0 = Math.Clamp(y0 * k, 0, mt.Height);
+            float sx1 = Math.Clamp(x1 * k, 0, mt.Width);
+            float sy1 = Math.Clamp(y1 * k, 0, mt.Height);
+            var src = new Rectangle(sx0, sy0, sx1 - sx0, sy1 - sy0);
+            var dst = new Rectangle(sx0 / k, sy0 / k, (sx1 - sx0) / k, (sy1 - sy0) / k);
+            Raylib.DrawTexturePro(mt, src, dst, Vector2.Zero, 0, Pal.White);
         }
-        Raylib.DrawRectangle(0, 0, (int)Size, (int)Size, road);
-
-        // chodniky (bloky) s obrubnikem
-        for (int i = 0; i < Grid; i++)
+        else
         {
-            for (int j = 0; j < Grid; j++)
+            Raylib.DrawRectangle((int)x0, (int)y0, (int)(x1 - x0), (int)(y1 - y0), new Color(40, 46, 40, 255));
+            foreach (var rd in Roads)
             {
-                float bx = i * Cell + Road, by = j * Cell + Road;
-                if (bx > x1 || bx + bs < x0 || by > y1 || by + bs < y0) continue;
-                Raylib.DrawRectangle((int)bx - 3, (int)by - 3, (int)bs + 6, (int)bs + 6, curb);
-                Raylib.DrawRectangle((int)bx, (int)by, (int)bs, (int)bs, Pal.Sidewalk);
-                // jemna dlazba
-                for (float t = 40; t < bs; t += 40)
-                {
-                    Raylib.DrawLine((int)(bx + t), (int)by, (int)(bx + t), (int)(by + bs), Raylib.Fade(Pal.Black, 0.06f));
-                    Raylib.DrawLine((int)bx, (int)(by + t), (int)(bx + bs), (int)(by + t), Raylib.Fade(Pal.Black, 0.06f));
-                }
-                // krajnice silnice
-                Raylib.DrawRectangleLinesEx(new Rectangle(bx - 10, by - 10, bs + 20, bs + 20), 2, edge);
+                if (rd.X > x1 || rd.X + rd.Width < x0 || rd.Y > y1 || rd.Y + rd.Height < y0) continue;
+                Raylib.DrawRectangleRec(rd, Pal.Road);
+            }
+            foreach (var b in Buildings)
+            {
+                if (b.X > x1 || b.X + b.Width < x0 || b.Y > y1 || b.Y + b.Height < y0) continue;
+                Raylib.DrawRectangleRec(b, new Color(96, 96, 102, 255));
             }
         }
 
-        // prerusovana cara uprostred silnic
-        for (int k = 0; k <= Grid; k++)
-        {
-            float c = k * Cell + Road / 2;
-            if (c > y0 - 4 && c < y1 + 4)
-            {
-                for (float x = MathF.Floor(MathF.Max(x0, 0) / 50) * 50; x < MathF.Min(x1, Size); x += 50)
-                    if (x % Cell >= Road + 8) Raylib.DrawRectangle((int)x, (int)c - 2, 26, 4, Pal.Line);
-            }
-            if (c > x0 - 4 && c < x1 + 4)
-            {
-                for (float y = MathF.Floor(MathF.Max(y0, 0) / 50) * 50; y < MathF.Min(y1, Size); y += 50)
-                    if (y % Cell >= Road + 8) Raylib.DrawRectangle((int)c - 2, (int)y, 4, 26, Pal.Line);
-            }
-        }
-
-        // prechody pro chodce u krizovatek
-        for (int i = 0; i <= Grid; i++)
-        {
-            for (int j = 0; j <= Grid; j++)
-            {
-                float ix = i * Cell, iy = j * Cell;
-                if (ix > x1 + 40 || ix + Cell < x0 - 40 || iy > y1 + 40 || iy + Cell < y0 - 40) continue;
-                for (int k = 0; k < 7; k++)
-                {
-                    float o = 12 + k * 17;
-                    if (i < Grid) Raylib.DrawRectangle((int)(ix + Road + 6), (int)(iy + o), 22, 9, zebra);
-                    if (i > 0) Raylib.DrawRectangle((int)(ix - 28), (int)(iy + o), 22, 9, zebra);
-                    if (j < Grid) Raylib.DrawRectangle((int)(ix + o), (int)(iy + Road + 6), 9, 22, zebra);
-                    if (j > 0) Raylib.DrawRectangle((int)(ix + o), (int)(iy - 28), 9, 22, zebra);
-                }
-            }
-        }
-
-        // parky
-        foreach (var p in Parks)
-        {
-            if (p.X > x1 || p.X + p.Width < x0 || p.Y > y1 || p.Y + p.Height < y0) continue;
-            Raylib.DrawRectangleRec(p, Pal.Park);
-            Raylib.DrawRectangleLinesEx(p, 4, new Color(30, 90, 42, 255));
-
-            // krizove cesticky
-            var path = new Color(185, 170, 130, 255);
-            Raylib.DrawRectangle((int)(p.X + p.Width / 2 - 9), (int)p.Y + 4, 18, (int)p.Height - 8, path);
-            Raylib.DrawRectangle((int)p.X + 4, (int)(p.Y + p.Height / 2 - 9), (int)p.Width - 8, 18, path);
-            Raylib.DrawCircle((int)(p.X + p.Width / 2), (int)(p.Y + p.Height / 2), 30, path);
-            Raylib.DrawCircle((int)(p.X + p.Width / 2), (int)(p.Y + p.Height / 2), 18, new Color(70, 140, 190, 255));
-
-            for (float tx = p.X + 30; tx < p.X + p.Width - 10; tx += 62)
-            {
-                for (float ty = p.Y + 30; ty < p.Y + p.Height - 10; ty += 62)
-                {
-                    float cx = p.X + p.Width / 2, cy = p.Y + p.Height / 2;
-                    if (MathF.Abs(tx - cx) < 26 || MathF.Abs(ty - cy) < 26) continue; // nechat cestu volnou
-                    Raylib.DrawCircle((int)tx + 5, (int)ty + 6, 15, Raylib.Fade(Pal.Black, 0.25f));
-                    Raylib.DrawCircle((int)tx, (int)ty, 15, Pal.Tree);
-                    Raylib.DrawCircle((int)tx - 4, (int)ty - 4, 8, new Color(40, 118, 54, 255));
-                }
-            }
-        }
-
-        // budovy (stin + strecha + detaily)
-        for (int i = 0; i < Buildings.Count; i++)
-        {
-            var b = Buildings[i];
-            if (b.X > x1 || b.X + b.Width < x0 || b.Y > y1 || b.Y + b.Height < y0) continue;
-            Raylib.DrawRectangle((int)b.X + 10, (int)b.Y + 10, (int)b.Width, (int)b.Height, Raylib.Fade(Pal.Black, 0.32f));
-            Raylib.DrawRectangleRec(b, BuildingColors[i]);
-            Raylib.DrawRectangle((int)b.X + 12, (int)b.Y + 12, (int)b.Width - 24, (int)b.Height - 24, Raylib.Fade(Pal.White, 0.07f));
-            Raylib.DrawRectangleLinesEx(
-                new Rectangle(b.X + 12, b.Y + 12, b.Width - 24, b.Height - 24), 2, Raylib.Fade(Pal.Black, 0.20f));
-
-            foreach (var (rr, kind) in _roofDetails[i])
-            {
-                Raylib.DrawRectangle((int)rr.X + 4, (int)rr.Y + 4, (int)rr.Width, (int)rr.Height, Raylib.Fade(Pal.Black, 0.25f));
-                switch (kind)
-                {
-                    case 0: // klimatizace
-                        Raylib.DrawRectangleRec(rr, new Color(170, 172, 178, 255));
-                        Raylib.DrawCircle((int)(rr.X + rr.Width / 2), (int)(rr.Y + rr.Height / 2), rr.Height / 2 - 3, new Color(70, 72, 78, 255));
-                        break;
-                    case 1: // svetlik
-                        Raylib.DrawRectangleRec(rr, new Color(120, 170, 200, 255));
-                        Raylib.DrawRectangleLinesEx(rr, 2, new Color(60, 70, 80, 255));
-                        break;
-                    default: // komin
-                        Raylib.DrawRectangleRec(rr, new Color(110, 70, 60, 255));
-                        Raylib.DrawRectangle((int)rr.X + 4, (int)rr.Y + 4, (int)rr.Width - 8, (int)rr.Height - 8, Pal.Dark);
-                        break;
-                }
-            }
-
-            Raylib.DrawRectangleLinesEx(b, 3, Raylib.Fade(Pal.Black, 0.45f));
-
-            // rozsvicena okna v noci
-            if (Night > 0.05f)
-            {
-                var glow = new Color(255, 224, 140, 255);
-                foreach (var wr in Windows[i])
-                    Raylib.DrawRectangleRec(wr, Raylib.Fade(glow, Night * 0.9f));
-            }
-        }
-
-        DrawSpecial(Garage, "LAKOVNA", new Color(255, 120, 190, 255), x0, y0, x1, y1);
+        // cedule specialnich budov (PNG je neoznacuje)
         DrawSpecial(Bank, "BANKA", new Color(250, 215, 80, 255), x0, y0, x1, y1);
         DrawSpecial(Hospital, "NEMOCNICE", new Color(250, 120, 120, 255), x0, y0, x1, y1);
         DrawSpecial(Safehouse, "UKRYT", new Color(120, 220, 150, 255), x0, y0, x1, y1);
@@ -345,24 +376,25 @@ public class World
         DrawSpecial(Store, "VECERKA", new Color(120, 220, 230, 255), x0, y0, x1, y1);
         DrawSpecial(Gas, "BENZINKA", new Color(255, 110, 110, 255), x0, y0, x1, y1);
         DrawSpecial(Villa, "VILA", new Color(200, 160, 255, 255), x0, y0, x1, y1);
+        DrawSpecial(Garage, "LAKOVNA", new Color(255, 120, 190, 255), x0, y0, x1, y1);
     }
 
     void DrawSpecial(Rectangle b, string label, Color accent, float x0, float y0, float x1, float y1)
     {
-        if (b.X > x1 || b.X + b.Width < x0 || b.Y - 30 > y1 || b.Y + b.Height < y0) return;
+        if (b.X > x1 || b.X + b.Width < x0 || b.Y - 40 > y1 || b.Y + b.Height < y0) return;
         float cx = b.X + b.Width / 2;
+        // zvyraznit budovu barevnym ramem (grafika mapy prosvita)
+        Raylib.DrawRectangleRec(b, Raylib.Fade(accent, 0.28f));
+        Raylib.DrawRectangleLinesEx(b, 3, accent);
 
-        Raylib.DrawRectangle((int)cx - 36, (int)(b.Y - 22), 72, 22, new Color(70, 70, 76, 255));
-        Raylib.DrawRectangle((int)cx - 30, (int)b.Y - 4, 60, 12, accent);
-        Raylib.DrawRectangleLinesEx(new Rectangle(cx - 30, b.Y - 4, 60, 12), 2, Raylib.Fade(Pal.Black, 0.6f));
-
-        for (float k = 0; k < b.Width - 40; k += 40)
-            Raylib.DrawRectangle((int)(b.X + 20 + k), (int)b.Y + 14, 20, 8, Raylib.Fade(Pal.Black, 0.20f));
-
-        int fs = 56;
+        // poutac s nazvem nad budovou
+        int fs = 20;
         int tw = Raylib.MeasureText(label, fs);
-        int ty = (int)(b.Y + b.Height / 2 - fs / 2);
-        Raylib.DrawText(label, (int)(cx - tw / 2) + 3, ty + 3, fs, Raylib.Fade(Pal.Black, 0.5f));
-        Raylib.DrawText(label, (int)(cx - tw / 2), ty, fs, Pal.White);
+        int bx = (int)(cx - tw / 2) - 8, by = (int)(b.Y - 30);
+        Raylib.DrawRectangle(bx, by, tw + 16, 26, Raylib.Fade(Pal.Black, 0.72f));
+        Raylib.DrawRectangle(bx, by, tw + 16, 4, accent);
+        Raylib.DrawText(label, (int)(cx - tw / 2), by + 5, fs, Pal.White);
     }
+
+    public static Vector2 Node(int i, int j) => new(i * Tile * 4, j * Tile * 4); // nepouzivane, kompat.
 }

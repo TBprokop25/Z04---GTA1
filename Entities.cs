@@ -123,7 +123,8 @@ public class Vehicle
 
     public float BurnTime, WreckAge, SmokeT, FireT, TurretAngle;
     public int Dir;              // smer civilniho AI (0 V, 1 J, 2 Z, 3 S)
-    public int LastNode = -1;
+    public int LastNode = -1;    // cilovy uzel grafu silnic, ke kteremu AI jede
+    public int PrevNode = -1;    // predchozi uzel (aby se AI neotacelo zpet)
     public float StuckT, ReverseT, ReverseSteer;
 
     public Vehicle(VKind kind, Vector2 pos, float angle, Color body)
