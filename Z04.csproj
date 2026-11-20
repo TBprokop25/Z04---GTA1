@@ -11,6 +11,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="assets\**\*.*" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\**\*.*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!-- Single-file publish nekdy vynecha velke soubory (>2 MB). Natvrdo zkopiruj vsechny assety do publish vystupu. -->
+  <Target Name="ForceCopyAssetsToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <AllAssets Include="assets\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(AllAssets)"
+          DestinationFiles="@(AllAssets->'$(PublishDir)assets\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="false" OverwriteReadOnlyFiles="true" />
+  </Target>
 </Project>
