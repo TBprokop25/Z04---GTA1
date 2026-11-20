@@ -1905,6 +1905,9 @@ public partial class Game
             else Raylib.DrawCircleV(p.Pos, p.Size * 0.5f, Raylib.Fade(Pal.Yellow, t));
         }
 
+        // nadjezdy dalnic - az nad auty, aby projizdejici auta jela pod dalnici
+        world.DrawOverpass(vx0, vy0, vx1, vy1);
+
         if (heli != null && InView(heli.Pos)) DrawHeli(heli);
 
         if (quest != null && QuestPoint() is Vector2 qMk)

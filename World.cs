@@ -35,6 +35,7 @@ public class World
     // pomocne segmenty silnic (v dlazdicich) pro generovani
     struct Seg { public float X0, Y0, X1, Y1, W; public bool Vert; }
     readonly List<Seg> _segs = new();
+    readonly List<Seg> _hwy = new();    // dalnice (nadjezdy) - kresli se nad auty
 
     public World(int seed)
     {
@@ -61,8 +62,11 @@ public class World
             var f = rd.GetProperty("from"); var t = rd.GetProperty("to");
             float x0 = f[0].GetSingle(), y0 = f[1].GetSingle(), x1 = t[0].GetSingle(), y1 = t[1].GetSingle();
             float w = rd.GetProperty("widthTiles").GetSingle();
+            string type = rd.TryGetProperty("type", out var tp) ? (tp.GetString() ?? "") : "";
             bool vert = MathF.Abs(x0 - x1) < MathF.Abs(y0 - y1);
-            _segs.Add(new Seg { X0 = x0, Y0 = y0, X1 = x1, Y1 = y1, W = w, Vert = vert });
+            var seg = new Seg { X0 = x0, Y0 = y0, X1 = x1, Y1 = y1, W = w, Vert = vert };
+            _segs.Add(seg);
+            if (type == "hwy") _hwy.Add(seg);
 
             float hw = w / 2f;
             Rectangle rect = vert
@@ -229,10 +233,31 @@ public class World
             if (Overlap(Buildings[k], rect, 6f)) { Buildings.RemoveAt(k); BuildingColors.RemoveAt(k); }
         Buildings.Add(rect);
         BuildingColors.Add(roof);
-        // dvere na jizni strane, kousek ven
-        door = new Vector2(center.X, rect.Y + h + F(0.55f));
-        if (door.Y > HPx - 40) door = new Vector2(center.X, rect.Y - F(0.55f));
+        // vchod na strane privracene k nejblizsi silnici (ne nahodne ze strany)
+        var dir = NearestRoadDir(center);
+        door = center + dir * (dir.X != 0 ? w / 2 + F(0.55f) : h / 2 + F(0.55f));
         return rect;
+    }
+
+    // Smer (jeden ze 4) od bodu k nejblizsi silnici - pro umisteni vchodu.
+    Vector2 NearestRoadDir(Vector2 p)
+    {
+        Vector2 best = new(0, 1); float bd = float.MaxValue;
+        foreach (var rd in Roads)
+        {
+            float cx = Math.Clamp(p.X, rd.X, rd.X + rd.Width);
+            float cy = Math.Clamp(p.Y, rd.Y, rd.Y + rd.Height);
+            var d = new Vector2(cx - p.X, cy - p.Y);
+            float len = d.LengthSquared();
+            if (len < bd && len > 0.01f)
+            {
+                bd = len;
+                best = MathF.Abs(d.X) > MathF.Abs(d.Y)
+                    ? new Vector2(MathF.Sign(d.X), 0)
+                    : new Vector2(0, MathF.Sign(d.Y));
+            }
+        }
+        return best;
     }
 
     static bool Overlap(Rectangle a, Rectangle b, float pad) =>
@@ -377,6 +402,41 @@ public class World
         DrawSpecial(Gas, "BENZINKA", new Color(255, 110, 110, 255), x0, y0, x1, y1);
         DrawSpecial(Villa, "VILA", new Color(200, 160, 255, 255), x0, y0, x1, y1);
         DrawSpecial(Garage, "LAKOVNA", new Color(255, 120, 190, 255), x0, y0, x1, y1);
+    }
+
+    /// <summary>Deska dalnic (nadjezd) - kresli se az NAD auty, takze projizdejici auta jedou pod ni.</summary>
+    public void DrawOverpass(float x0, float y0, float x1, float y1)
+    {
+        var rail = new Color(150, 150, 158, 255);
+        var deckCol = new Color(74, 74, 82, 255);
+        foreach (var s in _hwy)
+        {
+            float hw = s.W / 2f;
+            Rectangle deck = s.Vert
+                ? new Rectangle(F(s.X0 - hw), F(MathF.Min(s.Y0, s.Y1)), F(s.W), F(MathF.Abs(s.Y1 - s.Y0)))
+                : new Rectangle(F(MathF.Min(s.X0, s.X1)), F(s.Y0 - hw), F(MathF.Abs(s.X1 - s.X0)), F(s.W));
+            if (deck.X > x1 || deck.X + deck.Width < x0 || deck.Y > y1 || deck.Y + deck.Height < y0) continue;
+
+            // stin mostu dopadajici na auta pod nim
+            Raylib.DrawRectangle((int)deck.X + 10, (int)deck.Y + 12, (int)deck.Width, (int)deck.Height, Raylib.Fade(Pal.Black, 0.33f));
+            Raylib.DrawRectangleRec(deck, deckCol);
+            if (s.Vert)
+            {
+                float cx = deck.X + deck.Width / 2;
+                for (float y = deck.Y; y < deck.Y + deck.Height; y += 48)
+                    Raylib.DrawRectangle((int)cx - 3, (int)y + 10, 6, 26, Pal.Line);
+                Raylib.DrawRectangle((int)deck.X, (int)deck.Y, 9, (int)deck.Height, rail);
+                Raylib.DrawRectangle((int)(deck.X + deck.Width) - 9, (int)deck.Y, 9, (int)deck.Height, rail);
+            }
+            else
+            {
+                float cy = deck.Y + deck.Height / 2;
+                for (float x = deck.X; x < deck.X + deck.Width; x += 48)
+                    Raylib.DrawRectangle((int)x + 10, (int)cy - 3, 26, 6, Pal.Line);
+                Raylib.DrawRectangle((int)deck.X, (int)deck.Y, (int)deck.Width, 9, rail);
+                Raylib.DrawRectangle((int)deck.X, (int)(deck.Y + deck.Height) - 9, (int)deck.Width, 9, rail);
+            }
+        }
     }
 
     void DrawSpecial(Rectangle b, string label, Color accent, float x0, float y0, float x1, float y1)
