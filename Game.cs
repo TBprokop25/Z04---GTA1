@@ -34,6 +34,8 @@ public class Game
     Vehicle? car;
     int money, weaponIdx;
     readonly bool[] owned = new bool[Weapons.All.Length];
+    readonly int[] ammo = new int[Weapons.All.Length];   // naboje v zasobniku (zaloha je neomezena)
+    float reloadT;                                       // zbyva do konce prebijeni
     bool shop;
     bool holstered = true;   // zbran schovana (nebehas s ni porad v ruce)
 
@@ -42,6 +44,7 @@ public class Game
     int combo, carsDestroyed, kills, totalChaos;
     string msg = "";
     Quest? quest;
+    bool questPending;   // novou misi vytvari az UpdateQuest (nelze menit seznamy uprostred iterace)
     Camera2D cam;
     float vx0, vy0, vx1, vy1;
 
@@ -64,6 +67,11 @@ public class Game
     int prevStars;
     float alertT;
     string alertText = "";
+
+    // pocasi
+    enum Wx { Clear, Rain, Storm, Fog }
+    Wx wx = Wx.Clear;
+    float wxT = 40f, rainI, fogI, flash, lightT = 5f, thunderT = -1f;   // I = plynule narustajici intenzita 0..1
 
     // sluzby na mape
     const int HospitalFee = 200;
@@ -129,6 +137,7 @@ public class Game
     {
         W = w; H = h;
         owned[0] = true;
+        for (int i = 0; i < ammo.Length; i++) ammo[i] = Weapons.All[i].Mag;
         LoadGame();
         pPos = World.Node(4, 4);
 
@@ -213,6 +222,7 @@ public class Game
     {
         animT += dt;
         dayTime = (dayTime + dt / 150f) % 1f;   // cely den/noc cyklus za 150 s
+        UpdateWeather(dt);
 
         bool driving = scr == Scr.Play && !mapOpen && !shop && car != null && car.State == VState.Alive;
         Sfx.Engine(driving, driving ? MathF.Abs(car!.Speed) / car.MaxSpeed : 0f);
@@ -261,10 +271,10 @@ public class Game
                            (click && Raylib.CheckCollisionPointRec(mp, ShopRow(i)));
             if (!pressed) continue;
             var w = Weapons.All[i];
-            if (owned[i]) { weaponIdx = i; Say("Vybrano: " + w.Name); }
+            if (owned[i]) { weaponIdx = i; reloadT = 0; Say("Vybrano: " + w.Name); }
             else if (money >= w.Price)
             {
-                money -= w.Price; owned[i] = true; weaponIdx = i;
+                money -= w.Price; owned[i] = true; weaponIdx = i; reloadT = 0;
                 Say("Koupeno: " + w.Name);
             }
             else Say("Nedostatek penez na " + w.Name);
@@ -296,9 +306,20 @@ public class Game
         }
 
         if (pHp < 100 && lastHurtT > 6f) pHp = MathF.Min(100, pHp + 4 * dt);
-        if (Raylib.IsKeyPressed(Keys.N)) { NewQuest(); Say("Novy quest."); }
+        if (Raylib.IsKeyPressed(Keys.N)) { NewQuest(); Say("Nova mise."); }
 
         if (serviceCd > 0) serviceCd -= dt;
+
+        if (reloadT > 0)
+        {
+            reloadT -= dt;
+            if (reloadT <= 0)
+            {
+                reloadT = 0;
+                ammo[weaponIdx] = Weapons.All[weaponIdx].Mag;
+                Sfx.Play(Snd.Reload, 1.25f, 0.8f);
+            }
+        }
 
         if (Raylib.IsKeyPressed(Keys.E))
         {
@@ -314,6 +335,7 @@ public class Game
         {
             do { weaponIdx = (weaponIdx + 1) % Weapons.All.Length; } while (!owned[weaponIdx]);
             holstered = false;
+            reloadT = 0;
             Say("Zbran: " + Weapons.All[weaponIdx].Name);
         }
 
@@ -340,6 +362,13 @@ public class Game
         var mw = Raylib.GetScreenToWorld2D(Raylib.GetMousePosition(), cam);
         pAngle = MathF.Atan2(mw.Y - pPos.Y, mw.X - pPos.X);
 
+        // rucni prebijeni (R) - zaloha je neomezena
+        if (Raylib.IsKeyPressed(Keys.R) && reloadT <= 0 && ammo[weaponIdx] < Weapons.All[weaponIdx].Mag)
+        {
+            holstered = false;
+            StartReload();
+        }
+
         // schovana zbran: prvni klik ji jen vytahne (nebehas s ni porad)
         if (holstered)
         {
@@ -347,9 +376,11 @@ public class Game
             return;
         }
 
-        if (Raylib.IsMouseButtonDown(Keys.MouseLeft) && fireT <= 0)
+        if (Raylib.IsMouseButtonDown(Keys.MouseLeft) && fireT <= 0 && reloadT <= 0)
         {
             var w = Weapons.All[weaponIdx];
+            if (ammo[weaponIdx] <= 0) { StartReload(); return; }
+            ammo[weaponIdx]--;
             fireT = w.Cooldown;
             Shoot(pPos + DirOf(pAngle) * 14, pAngle, w.Damage, w.Spread, w.Speed, w.Range, w.Explosive, true, null, w.Pellets);
             AlertCivilians(pPos, 320, 3f);
@@ -358,16 +389,27 @@ public class Game
                     : w.Name is "SMG" or "Minigun" ? Snd.Smg
                     : w.Explosive ? Snd.Nitro : Snd.Shot;
             Sfx.Play(sfx, Rnd(0.95f, 1.08f));
+            if (ammo[weaponIdx] <= 0) StartReload();   // prazdny zasobnik -> automaticky prebit
         }
     }
 
     void Respawn()
     {
         pHp = 100; pArmor = 0; heat = 0; car = null; combo = 0; sprayT = 0; robbing = false; heli = null; holstered = true;
+        reloadT = 0;
+        for (int i = 0; i < ammo.Length; i++) ammo[i] = Weapons.All[i].Mag;
         pPos = World.Node(4, 4);
         int fee = (int)(money * 0.2f);
         money -= fee;
         Say($"Nemocnice te vylecila. Poplatek: ${fee}");
+    }
+
+    void StartReload()
+    {
+        var w = Weapons.All[weaponIdx];
+        if (reloadT > 0 || ammo[weaponIdx] >= w.Mag) return;
+        reloadT = w.ReloadTime;
+        Sfx.Play(Snd.Reload, 0.8f, 0.8f);
     }
 
     void TryEnterCar()
@@ -426,22 +468,23 @@ public class Game
 
     void DriveVehicle(Vehicle v, float throttle, float steer, bool brake, float dt)
     {
+        float wet = v.PlayerDriven ? rainI : 0f;   // mokra vozovka: delsi brzdna draha, horsi zataceni
         if (throttle > 0) v.Speed += (v.Speed < 0 ? 2.2f : 1f) * v.Accel * throttle * dt;
         else if (throttle < 0) v.Speed += (v.Speed > 0 ? 2.2f : 1f) * v.Accel * throttle * dt;
         else
         {
-            float f = 220f * dt;
+            float f = 220f * dt * (1f - 0.55f * wet);
             v.Speed = MathF.Abs(v.Speed) <= f ? 0 : v.Speed - MathF.Sign(v.Speed) * f;
         }
         if (brake)
         {
-            float f = 760f * dt;
+            float f = 760f * dt * (1f - 0.40f * wet);
             v.Speed = MathF.Abs(v.Speed) <= f ? 0 : v.Speed - MathF.Sign(v.Speed) * f;
         }
         v.Speed = Math.Clamp(v.Speed, -v.MaxSpeed * 0.4f, v.MaxSpeed);
 
         float turn = v.TurnRate * Math.Clamp(MathF.Abs(v.Speed) / 120f, 0f, 1f) * (v.Speed >= 0 ? 1f : -1f);
-        v.Angle += steer * turn * dt;
+        v.Angle += steer * turn * (1f - 0.20f * wet) * dt;
     }
 
     void MoveVehicle(Vehicle v, float dt)
@@ -480,7 +523,7 @@ public class Game
         }
 
         // stopy po pneumatikach pri smyku (rucni brzda nebo ostra zatacka v rychlosti)
-        if ((brake || MathF.Abs(st) > 0.5f) && MathF.Abs(v.Speed) > 150 && v.Kind != VKind.Tank)
+        if ((brake || MathF.Abs(st) > 0.5f) && MathF.Abs(v.Speed) > 150f - 50f * rainI && v.Kind != VKind.Tank)
         {
             var fw = v.Forward;
             var rg = new Vector2(-fw.Y, fw.X);
@@ -868,10 +911,18 @@ public class Game
         for (int i = 0; i < 5; i++)
             AddParticle(p.Pos, new Vector2(Rnd(-60, 60), Rnd(-60, 60)), 0.5f, 4, 2);
 
+        if (p.Vip && quest != null && quest.Vip == p)
+        {
+            p.Vip = false;
+            if (p.HitByPlayer) { heat += 20; CompleteQuest(); }
+            else { Say("Cil zemrel bez tebe - mise zrusena."); NewQuest(); }
+            return;
+        }
+
         if (!p.HitByPlayer) return;
         switch (p.Kind)
         {
-            case PKind.Civil: heat += 10; AddMoney(50, p.Pos); break;
+            case PKind.Civil: heat += 10; AddMoney(50, p.Pos); QuestProgress(QType.Rampage); break;
             case PKind.Cop: heat += 45; DropLoot(p.Pos, 0.6f); AddMoney(150, p.Pos); QuestProgress(QType.KillCops); break;
             default: heat += 55; DropLoot(p.Pos, 0.8f); AddMoney(300, p.Pos); QuestProgress(QType.KillCops); break;
         }
@@ -1040,7 +1091,7 @@ public class Game
                 if (!p.Dead && p.Kind != PKind.Civil) nearest = MathF.Min(nearest, Vector2.Distance(p.Pos, pPos));
             foreach (var v in vehicles)
                 if (v.State == VState.Alive && v.Kind != VKind.Civil && v.Ai) nearest = MathF.Min(nearest, Vector2.Distance(v.Pos, pPos));
-            heat -= (nearest > 700 ? Tune.HeatDecayFar : Tune.HeatDecayNear) * dt;
+            heat -= (nearest > 700f - 260f * fogI - 120f * rainI ? Tune.HeatDecayFar : Tune.HeatDecayNear) * dt;   // v mlze/desti te policie ztrati drive
             if (heat < 0) heat = 0;
         }
 
@@ -1172,7 +1223,7 @@ public class Game
         {
             float d = Vector2.Distance(p.Pos, pPos);
             if (p.Dead) return p.DeadT > 25f;
-            if (p.Kind == PKind.Civil) return d > 2200;
+            if (p.Kind == PKind.Civil) return d > 2200 && !p.Vip;
             return d > 1800 || (s == 0 && d > 700);
         });
         vehicles.RemoveAll(v =>
@@ -1199,8 +1250,35 @@ public class Game
 
     void NewQuest()
     {
+        if (quest?.Vip != null) quest.Vip.Vip = false;
+        quest = null;
+        questPending = true;
+    }
+
+    void Fail(string text) { Say(text); NewQuest(); }
+
+    /// <summary>Nahodny uzel mrizky ve vzdalenosti min..max od bodu.</summary>
+    Vector2 PickNode(Vector2 from, float min, float max)
+    {
+        var n = World.Node(rnd.Next(World.Grid + 1), rnd.Next(World.Grid + 1));
+        for (int i = 0; i < 40; i++)
+        {
+            n = World.Node(rnd.Next(World.Grid + 1), rnd.Next(World.Grid + 1));
+            float d = Vector2.Distance(n, from);
+            if (d > min && d < max) break;
+        }
+        return n;
+    }
+
+    static void SetRampage(Quest q)
+    {
+        q.Type = QType.Rampage; q.Goal = 12; q.Time = 60f; q.Reward = 3200;
+    }
+
+    void BuildQuest()
+    {
         var q = new Quest();
-        switch (rnd.Next(4))
+        switch (rnd.Next(8))
         {
             case 0:
                 q.Type = QType.DestroyCars; q.Goal = rnd.Next(4, 9); q.Reward = q.Goal * 400;
@@ -1211,19 +1289,51 @@ public class Game
             case 2:
             {
                 q.Type = QType.Checkpoint; q.Goal = 1;
-                for (int i = 0; i < 40; i++)
-                {
-                    q.Target = World.Node(rnd.Next(World.Grid + 1), rnd.Next(World.Grid + 1));
-                    float dd = Vector2.Distance(q.Target, pPos);
-                    if (dd > 700 && dd < 2500) break;
-                }
+                q.Target = PickNode(pPos, 700f, 2500f);
                 float dist = Vector2.Distance(q.Target, pPos);
                 q.Time = dist / 130f + 18f;
                 q.Reward = (int)(1200 + dist * 0.8f);
                 break;
             }
-            default:
+            case 3:
                 q.Type = QType.Survive; q.Goal = 25; q.Reward = 4000;
+                break;
+            case 4:   // kuryr: vyzvedni balik a dovez ho jinam
+            {
+                q.Type = QType.Courier; q.Goal = 1;
+                q.Target = PickNode(pPos, 500f, 1800f);
+                q.Target2 = PickNode(q.Target, 900f, 2200f);
+                float d1 = Vector2.Distance(pPos, q.Target), d2 = Vector2.Distance(q.Target, q.Target2);
+                q.Time = (d1 + d2) / 125f + 25f;
+                q.Reward = (int)(1500 + (d1 + d2) * 0.7f);
+                break;
+            }
+            case 5:   // kradez: zlate auto dovez do lakovny
+            {
+                var cv = SpawnCivil(false, 700);
+                cv.Model = VModel.Sedan;
+                cv.Body = new Color(255, 190, 0, 255);
+                cv.MaxHp = cv.Hp = 100f;
+                vehicles.Add(cv);
+                q.Type = QType.StealCar; q.Goal = 1; q.Car = cv; q.Target2 = world.GarageDoor;
+                float d1 = Vector2.Distance(cv.Pos, pPos), d2 = Vector2.Distance(cv.Pos, q.Target2);
+                q.Time = d1 / 140f + d2 / 120f + 35f;
+                q.Reward = (int)(1800 + (d1 + d2) * 0.6f);
+                break;
+            }
+            case 6:   // atentat: zlikviduj zlateho chodce (utika, kdyz se priblizis)
+            {
+                int before = people.Count;
+                SpawnPerson(PKind.Civil, 700, 1300);
+                if (people.Count == before) { SetRampage(q); break; }
+                var vp = people[^1];
+                vp.Vip = true; vp.Hp = 90f; vp.Col = new Color(255, 215, 0, 255);
+                q.Type = QType.Assassinate; q.Goal = 1; q.Vip = vp;
+                q.Time = 110f; q.Reward = 3500;
+                break;
+            }
+            default:
+                SetRampage(q);
                 break;
         }
         quest = q;
@@ -1250,33 +1360,103 @@ public class Game
 
     void UpdateQuest(float dt)
     {
+        if (questPending) { questPending = false; BuildQuest(); }
         var q = quest;
         if (q == null || deadT > 0) return;
 
-        if (q.Type == QType.Checkpoint)
+        switch (q.Type)
         {
-            q.Time -= dt;
-            if (car != null && Vector2.Distance(car.Pos, q.Target) < 80) CompleteQuest();
-            else if (q.Time <= 0) { Say("Quest nesplnen - vyprsel cas."); NewQuest(); }
-        }
-        else if (q.Type == QType.Survive)
-        {
-            if (Stars >= 3)
-            {
-                q.Prog += dt;
-                if (q.Prog >= q.Goal) CompleteQuest();
-            }
-            else q.Prog = 0;
+            case QType.Checkpoint:
+                q.Time -= dt;
+                if (car != null && Vector2.Distance(car.Pos, q.Target) < 80) CompleteQuest();
+                else if (q.Time <= 0) Fail("Quest nesplnen - vyprsel cas.");
+                break;
+
+            case QType.Survive:
+                if (Stars >= 3)
+                {
+                    q.Prog += dt;
+                    if (q.Prog >= q.Goal) CompleteQuest();
+                }
+                else q.Prog = 0;
+                break;
+
+            case QType.Courier:
+                q.Time -= dt;
+                if (q.Stage == 0 && car != null && Vector2.Distance(car.Pos, q.Target) < 80)
+                {
+                    q.Stage = 1;
+                    Say("Balik nalozen! Dovez ho na druhy bod.");
+                    Sfx.Play(Snd.Pickup);
+                }
+                else if (q.Stage == 1 && car != null && Vector2.Distance(car.Pos, q.Target2) < 80) { CompleteQuest(); return; }
+                if (q.Time <= 0) Fail("Kuryr: vyprsel cas.");
+                break;
+
+            case QType.StealCar:
+                q.Time -= dt;
+                if (q.Car == null || q.Car.State != VState.Alive) { Fail("Auto bylo zniceno - mise selhala."); return; }
+                if (q.Stage == 0 && car == q.Car)
+                {
+                    q.Stage = 1;
+                    Say("Mas auto! Dovez ho do lakovny.");
+                    Sfx.Play(Snd.Pickup);
+                }
+                if (q.Stage == 1 && car == q.Car && Vector2.Distance(car.Pos, q.Target2) < 90) { CompleteQuest(); return; }
+                if (q.Time <= 0) Fail("Kradez auta: vyprsel cas.");
+                break;
+
+            case QType.Assassinate:
+                q.Time -= dt;
+                if (q.Vip != null && !q.Vip.Dead && Vector2.Distance(q.Vip.Pos, pPos) < 380f && q.Vip.FleeT < 0.5f)
+                {
+                    q.Vip.FleeT = 2f;          // cil te zahlidl a utika
+                    q.Vip.FleeFrom = pPos;
+                }
+                if (q.Time <= 0) Fail("Cil ti unikl - vyprsel cas.");
+                break;
+
+            case QType.Rampage:
+                q.Time -= dt;
+                if (q.Time <= 0) Fail($"Rampage: nestihl jsi to ({(int)q.Prog}/{q.Goal}).");
+                break;
         }
     }
 
-    string QuestText(Quest q) => q.Type switch
+    /// <summary>Kam ukazuje znacka aktualni mise (null = zadna).</summary>
+    Vector2? QuestPoint()
     {
-        QType.DestroyCars => $"Znic auta: {(int)q.Prog}/{q.Goal}",
-        QType.KillCops => $"Zabij policisty/vojaky: {(int)q.Prog}/{q.Goal}",
-        QType.Checkpoint => $"Dojed autem na zluty bod: {Math.Max(0, (int)q.Time)}s",
-        _ => $"Preziji na 3+ hvezdach: {(int)q.Prog}/{q.Goal}s",
-    };
+        var q = quest;
+        if (q == null) return null;
+        switch (q.Type)
+        {
+            case QType.Checkpoint: return q.Target;
+            case QType.Courier: return q.Stage == 0 ? q.Target : q.Target2;
+            case QType.StealCar:
+                if (q.Car == null) return null;
+                return q.Stage == 0 || car != q.Car ? q.Car.Pos : q.Target2;
+            case QType.Assassinate:
+                return q.Vip != null && !q.Vip.Dead ? q.Vip.Pos : null;
+            default: return null;
+        }
+    }
+
+    string QuestText(Quest q)
+    {
+        int t = Math.Max(0, (int)q.Time);
+        return q.Type switch
+        {
+            QType.DestroyCars => $"Znic auta: {(int)q.Prog}/{q.Goal}",
+            QType.KillCops => $"Zabij policisty/vojaky: {(int)q.Prog}/{q.Goal}",
+            QType.Checkpoint => $"Dojed autem na zluty bod: {t}s",
+            QType.Courier => q.Stage == 0 ? $"Kuryr: vyzvedni balik autem ({t}s)" : $"Kuryr: dovez balik ({t}s)",
+            QType.StealCar => q.Stage == 0 ? $"Ukradni zlate auto ({t}s)"
+                            : car == q.Car ? $"Dovez ho do lakovny ({t}s)" : $"Vrat se do zlateho auta ({t}s)",
+            QType.Assassinate => $"Zlikviduj zlateho cile ({t}s)",
+            QType.Rampage => $"Rampage: zabij chodce {(int)q.Prog}/{q.Goal} ({t}s)",
+            _ => $"Preziji na 3+ hvezdach: {(int)q.Prog}/{q.Goal}s",
+        };
+    }
 
     // ---------- pickupy a lakovna
 
@@ -1413,6 +1593,57 @@ public class Game
         }
     }
 
+    // ---------- pocasi
+
+    static float Approach(float v, float target, float step) =>
+        v < target ? MathF.Min(v + step, target) : MathF.Max(v - step, target);
+
+    void UpdateWeather(float dt)
+    {
+        wxT -= dt;
+        if (wxT <= 0)
+        {
+            wxT = Rnd(45f, 95f);
+            float r = Rnd();
+            Wx nw = r < 0.40f ? Wx.Clear : r < 0.68f ? Wx.Rain : r < 0.84f ? Wx.Fog : Wx.Storm;
+            if (nw != wx)
+            {
+                wx = nw;
+                if (scr == Scr.Play)
+                    Say(nw switch
+                    {
+                        Wx.Rain => "Zacina prset.",
+                        Wx.Storm => "Blizi se bourka!",
+                        Wx.Fog => "Pada husta mlha.",
+                        _ => "Pocasi se vyjasnuje.",
+                    });
+            }
+        }
+
+        float rainTarget = wx == Wx.Rain ? 0.7f : wx == Wx.Storm ? 1f : 0f;
+        rainI = Approach(rainI, rainTarget, dt * 0.2f);
+        fogI = Approach(fogI, wx == Wx.Fog ? 1f : 0f, dt * 0.2f);
+
+        // blesky a hrom v bouri
+        if (wx == Wx.Storm && rainI > 0.6f)
+        {
+            lightT -= dt;
+            if (lightT <= 0) { lightT = Rnd(4f, 10f); flash = 1f; thunderT = Rnd(0.2f, 1.6f); }
+        }
+        if (flash > 0) flash = MathF.Max(0, flash - dt * 2.2f);
+        if (thunderT > 0)
+        {
+            thunderT -= dt;
+            if (thunderT <= 0 && scr == Scr.Play)
+            {
+                Sfx.Play(Snd.Thunder, Rnd(0.9f, 1.1f), 0.9f);
+                shake = MathF.Max(shake, 3);
+            }
+        }
+
+        Sfx.Rain(scr == Scr.Play ? rainI * 0.5f : 0f);
+    }
+
     // ---------- efekty, kamera
 
     void AddParticle(Vector2 pos, Vector2 vel, float life, float size, int kind)
@@ -1522,6 +1753,7 @@ public class Game
         vy0 = cam.Target.Y - hh; vy1 = cam.Target.Y + hh;
 
         world.Night = Night;
+        world.Wet = rainI;
         world.Draw(vx0, vy0, vx1, vy1);
 
         // nocni ztmaveni zeme a budov + pouliclni lampy
@@ -1708,11 +1940,14 @@ public class Game
 
         if (heli != null && InView(heli.Pos)) DrawHeli(heli);
 
-        if (quest != null && quest.Type == QType.Checkpoint)
+        if (quest != null && QuestPoint() is Vector2 qMk)
         {
-            float pulse = 1f + MathF.Sin(animT * 5f) * 0.12f;
-            Raylib.DrawCircleV(quest.Target, 70 * pulse, Raylib.Fade(Pal.Yellow, 0.35f));
-            Raylib.DrawCircleLines((int)quest.Target.X, (int)quest.Target.Y, 70 * pulse, Pal.Yellow);
+            bool qSmall = quest.Type == QType.Assassinate ||
+                          (quest.Type == QType.StealCar && (quest.Stage == 0 || car != quest.Car));
+            float qRad = (qSmall ? 44f : 70f) * (1f + MathF.Sin(animT * 5f) * 0.12f);
+            Color qCol = quest.Type == QType.Assassinate ? Pal.Red : Pal.Yellow;
+            Raylib.DrawCircleV(qMk, qRad, Raylib.Fade(qCol, 0.35f));
+            Raylib.DrawCircleLines((int)qMk.X, (int)qMk.Y, qRad, qCol);
         }
 
         foreach (var p in popups)
@@ -1720,6 +1955,7 @@ public class Game
 
         Raylib.EndMode2D();
 
+        DrawWeather();
         DrawVignette();
         if (scr != Scr.Menu) DrawHud();
         if (shop && scr == Scr.Play) DrawShop();
@@ -1960,6 +2196,51 @@ public class Game
             Raylib.DrawCircleV(p.Pos + fwd * (i * 4.5f), i == 1 ? 3.6f : 5.2f, Raylib.Fade(body, fade));
     }
 
+    static float Hash(int i, double a, double m)
+    {
+        double v = Math.Sin(i * a) * m;
+        return (float)(v - Math.Floor(v));
+    }
+
+    /// <summary>Dest, mlha a blesky - kresli se pres celou obrazovku (hrac je vzdy ve stredu).</summary>
+    void DrawWeather()
+    {
+        if (rainI > 0.01f)
+        {
+            Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(new Color(12, 20, 40, 255), 0.26f * rainI));
+            int n = (int)(320 * rainI);
+            float slant = 0.15f + 0.25f * Math.Clamp((rainI - 0.7f) / 0.3f, 0f, 1f);
+            var rc = Raylib.Fade(new Color(200, 215, 240, 255), 0.32f);
+            for (int i = 0; i < n; i++)
+            {
+                float bx = Hash(i, 12.9898, 43758.5453) * (W + 320f);
+                float sp = 0.75f + Hash(i, 3.1337, 9631.1) * 0.6f;
+                float y = (Hash(i, 78.233, 24634.6345) * H + animT * 820f * sp) % H;
+                float x = bx - y * slant;
+                float len = 14f + 10f * sp;
+                Raylib.DrawLineEx(new Vector2(x, y), new Vector2(x - slant * len, y + len), 1.5f, rc);
+            }
+        }
+
+        if (fogI > 0.01f)
+        {
+            var c = new Vector2(W / 2f, H / 2f);
+            float dk = 1f - 0.65f * Night;
+            var fc = new Color((byte)(176 * dk), (byte)(182 * dk), (byte)(188 * dk), (byte)255);
+            const int step = 24;
+            Raylib.DrawCircleV(c, 101, Raylib.Fade(fc, fogI * 0.12f));
+            for (int r = 100; r < 780; r += step)
+            {
+                float t = Math.Clamp((r - 100) / 480f, 0f, 1f);
+                t = t * t * (3f - 2f * t);
+                Raylib.DrawRing(c, r, r + step + 1, 0, 360, 48, Raylib.Fade(fc, fogI * (0.12f + 0.78f * t)));
+            }
+        }
+
+        if (flash > 0.01f)
+            Raylib.DrawRectangle(0, 0, W, H, Raylib.Fade(new Color(220, 230, 255, 255), flash * flash * 0.55f));
+    }
+
     void DrawVignette()
     {
         var dark = Raylib.Fade(Pal.Black, 0.38f);
@@ -2042,8 +2323,24 @@ public class Game
         bool onFootHolstered = car == null && holstered;
         string wn = car != null && car.Kind == VKind.Tank ? "Tankovy kanon"
                   : Weapons.All[weaponIdx].Name + (onFootHolstered ? "  (schovano - F)" : "");
-        Panel(new Rectangle(12, H - 100, 340, 62), panelCol);
-        Txt(wn, 24, H - 94, 26, onFootHolstered ? Pal.Gray : Pal.White);
+        Panel(new Rectangle(12, H - 126, 340, 88), panelCol);
+        Txt(wn, 24, H - 120, 26, onFootHolstered ? Pal.Gray : Pal.White);
+        if (car == null)
+        {
+            var curW = Weapons.All[weaponIdx];
+            if (reloadT > 0)
+            {
+                Txt("PREBIJENI", 24, H - 90, 20, Pal.Yellow);
+                Bar(140, H - 88, 196, 14, 1f - reloadT / curW.ReloadTime, Pal.Yellow);
+            }
+            else
+            {
+                int ammoNow = ammo[weaponIdx];
+                bool ammoLow = ammoNow <= curW.Mag / 4;
+                Txt($"Naboje {ammoNow}/{curW.Mag}", 24, H - 90, 20, ammoLow ? Pal.Red : Pal.White);
+                Txt("[R] prebit", 230, H - 88, 16, Pal.Gray);
+            }
+        }
         for (int i = 0; i < Weapons.All.Length; i++)
         {
             Color c = i == weaponIdx ? Pal.Yellow : owned[i] ? new Color(170, 170, 176, 255) : new Color(60, 60, 66, 255);
@@ -2057,11 +2354,19 @@ public class Game
             string rw = $"Odmena: ${quest.Reward}";
             int qw = Math.Max(Raylib.MeasureText(qt, 22), Raylib.MeasureText(rw, 18)) + 28;
             Panel(new Rectangle(W - qw - 16, 16, qw, 100), panelCol);
-            Raylib.DrawText("SIDEQUEST (N = jiny)", W - qw - 4, 22, 14, Pal.Yellow);
+            Raylib.DrawText("MISE (N = jina)", W - qw - 4, 22, 14, Pal.Yellow);
             Raylib.DrawText(qt, W - qw - 4, 40, 22, Pal.White);
             Raylib.DrawText(rw, W - qw - 4, 66, 18, green);
-            float frac = quest.Type == QType.Checkpoint ? 0f : quest.Prog / Math.Max(1, quest.Goal);
-            if (quest.Type != QType.Checkpoint) Bar(W - qw - 4, 92, qw - 24, 12, frac, Pal.Yellow);
+            bool qBar = quest.Type is QType.DestroyCars or QType.KillCops or QType.Survive or QType.Rampage;
+            if (qBar) Bar(W - qw - 4, 92, qw - 24, 12, quest.Prog / Math.Max(1, quest.Goal), Pal.Yellow);
+        }
+
+        // hodiny a pocasi
+        {
+            int clkH = (int)(dayTime * 24f) % 24, clkM = (int)(dayTime * 24f * 60f) % 60;
+            string wxLabel = wx switch { Wx.Rain => "Dest", Wx.Storm => "Bourka", Wx.Fog => "Mlha", _ => "Jasno" };
+            string clk = $"{clkH:00}:{clkM:00}   {wxLabel}";
+            Txt(clk, W - Raylib.MeasureText(clk, 18) - 20, 122, 18, new Color(210, 215, 225, 255));
         }
 
         // varovani pred policii
@@ -2090,17 +2395,17 @@ public class Game
         }
 
         // navigacni sipka k cili questu (checkpoint)
-        if (quest != null && quest.Type == QType.Checkpoint)
+        if (QuestPoint() is Vector2 qNav)
         {
-            var sp = Raylib.GetWorldToScreen2D(quest.Target, cam);
+            var sp = Raylib.GetWorldToScreen2D(qNav, cam);
             bool off = sp.X < 60 || sp.X > W - 60 || sp.Y < 90 || sp.Y > H - 90;
             if (off)
             {
-                var dir = Vector2.Normalize(quest.Target - pPos);
+                var dir = Vector2.Normalize(qNav - pPos);
                 var at = new Vector2(W / 2f, H / 2f) + dir * 150;
                 Raylib.DrawPoly(at, 3, 20, MathF.Atan2(dir.Y, dir.X) * RadToDeg, Pal.Yellow);
                 Raylib.DrawPolyLines(at, 3, 20, MathF.Atan2(dir.Y, dir.X) * RadToDeg, Pal.Black);
-                int m = Math.Max(0, (int)(Vector2.Distance(pPos, quest.Target) / 10));
+                int m = Math.Max(0, (int)(Vector2.Distance(pPos, qNav) / 10));
                 Txt($"{m} m", (int)at.X - 20, (int)at.Y + 22, 16, Pal.Yellow);
             }
         }
@@ -2218,8 +2523,9 @@ public class Game
             { "Space", "rucni brzda (smyk zanecha stopy)" },
             { "Q", "dalsi zbran" },
             { "F", "schovat / vytahnout zbran" },
+            { "R", "prebit zbran (zaloha naboju neomezena)" },
             { "B", "obchod (zbrane 1-6, brneni 7)" },
-            { "N", "novy sidequest" },
+            { "N", "nova mise" },
             { "M", "velka mapa" },
             { "E u banky", "vykrast banku (12 s)" },
             { "E u nemocnice", "plne vyleceni ($200)" },
@@ -2228,8 +2534,8 @@ public class Game
         };
         for (int i = 0; i < rows.GetLength(0); i++)
         {
-            Txt(rows[i, 0], px + 28, py + 66 + i * 28, 21, Pal.White);
-            Txt(rows[i, 1], px + 260, py + 66 + i * 28, 21, new Color(200, 200, 205, 255));
+            Txt(rows[i, 0], px + 28, py + 66 + i * 26, 21, Pal.White);
+            Txt(rows[i, 1], px + 260, py + 66 + i * 26, 21, new Color(200, 200, 205, 255));
         }
 
         Txt("TIPY", px + 28, py + 470, 22, Pal.Yellow);
@@ -2237,7 +2543,8 @@ public class Game
         Txt("Mesto zije v cyklu den/noc - v noci sviti lampy, okna a reflektory aut.", px + 28, py + 520, 17, Pal.White);
         Txt("Na 3+ hvezdach stavi policie zatarasy, na 5 hvezdach prileti bojovy vrtulnik.", px + 28, py + 542, 17, Pal.White);
         Txt("Jezdi i dodavky, autobusy, motorky a sanitky. Granat (zbran 6) lob na dalku.", px + 28, py + 564, 17, Pal.White);
-        Txt("Klikni nebo stiskni klavesu pro navrat", px + 28, py + 598, 16, Pal.Gray);
+        Txt("Pocasi: v desti auto klouze, v mlze te policie hur vidi, v bouri hrmi.", px + 28, py + 586, 17, Pal.White);
+        Txt("Klikni nebo stiskni klavesu pro navrat", px + 28, py + 614, 16, Pal.Gray);
     }
 
     void DrawMinimap()
@@ -2254,8 +2561,9 @@ public class Game
             Raylib.DrawRectangle(mx + (int)(b.X * s), my + (int)(b.Y * s),
                 Math.Max(1, (int)(b.Width * s)), Math.Max(1, (int)(b.Height * s)), Pal.Gray);
 
-        if (quest != null && quest.Type == QType.Checkpoint)
-            Raylib.DrawCircle(mx + (int)(quest.Target.X * s), my + (int)(quest.Target.Y * s), 5, Pal.Yellow);
+        if (QuestPoint() is Vector2 qMini)
+            Raylib.DrawCircle(mx + (int)(qMini.X * s), my + (int)(qMini.Y * s), 5,
+                quest!.Type == QType.Assassinate ? Pal.Red : Pal.Yellow);
 
         if (Stars > 0)
         {
@@ -2325,10 +2633,11 @@ public class Game
         Txt(gl, mx + (int)((world.Garage.X + world.Garage.Width / 2) * s) - Raylib.MeasureText(gl, 14) / 2,
             my + (int)((world.Garage.Y + world.Garage.Height / 2) * s) - 7, 14, Pal.Black);
 
-        if (quest != null && quest.Type == QType.Checkpoint)
+        if (QuestPoint() is Vector2 qBig)
         {
-            Raylib.DrawCircle(mx + (int)(quest.Target.X * s), my + (int)(quest.Target.Y * s), 8, Pal.Yellow);
-            Raylib.DrawCircleLines(mx + (int)(quest.Target.X * s), my + (int)(quest.Target.Y * s), 8, Pal.Black);
+            Raylib.DrawCircle(mx + (int)(qBig.X * s), my + (int)(qBig.Y * s), 8,
+                quest!.Type == QType.Assassinate ? Pal.Red : Pal.Yellow);
+            Raylib.DrawCircleLines(mx + (int)(qBig.X * s), my + (int)(qBig.Y * s), 8, Pal.Black);
         }
 
         if (Stars > 0)
@@ -2385,7 +2694,7 @@ public class Game
             Color c = owned[i] ? new Color(120, 230, 120, 255) : (money >= w.Price ? Pal.White : new Color(150, 150, 155, 255));
             string dmg = w.Explosive ? "vybuch" : $"{w.Damage * w.Pellets:0} dmg";
             Txt($"{i + 1}.  {w.Name}", (int)r.X + 12, (int)r.Y + 8, 26, c);
-            Txt($"{dmg}  {1f / w.Cooldown:0.#}/s", (int)r.X + 230, (int)r.Y + 14, 16, Pal.Gray);
+            Txt($"{dmg}  {1f / w.Cooldown:0.#}/s  zas. {w.Mag}", (int)r.X + 230, (int)r.Y + 14, 16, Pal.Gray);
             Txt(status, (int)r.X + 410, (int)r.Y + 10, 22, c);
         }
 
